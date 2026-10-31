@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS feedback (
     text TEXT NOT NULL,
     done INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    pin_hash TEXT NOT NULL,        -- scrypt, see auth.py
+    admin INTEGER DEFAULT 0,
+    failed INTEGER DEFAULT 0,      -- wrong PINs since the last correct one
+    locked_until TEXT,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M', 'now', 'localtime'))
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,   -- sha256 of the cookie value
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_catches_time ON catches(time);
 CREATE INDEX IF NOT EXISTS idx_trips_start ON trips(start);
 """

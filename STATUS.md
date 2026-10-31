@@ -1,8 +1,8 @@
 # Fishalyzer – project status
 
 ```
-Proof of concept   ████████████████████  100%   (v0.1.0 · 2026-10-30)
-Deployed to server ░░░░░░░░░░░░░░░░░░░░    0%   (run ./deploy.sh)
+Proof of concept   ████████████████████  100%   (v0.3.0 · 2026-10-31)
+Deployed to server ████████████████████  100%   (goblinserver + Cloudflare tunnel)
 Model learning     ░░░░░░░░░░░░░░░░░░░░    0%   (live value: status bar in the app)
 ```
 
@@ -23,6 +23,7 @@ server online · trips · fish · anglers on the water · weather API ✓/⚠ ·
 - [x] CSV export of catches + conditions
 - [x] Phone-first PWA (add to home screen), Docker + deploy script
 - [x] Running on the home server (Docker), reachable over Tailscale
+- [x] v0.3: username + 4-digit PIN login with lockout, Admin page for accounts, public via Cloudflare Tunnel
 
 ## Next ideas (not started)
 - [ ] Enable `tailscale serve` for HTTPS (needed for GPS + home-screen install)
@@ -30,7 +31,7 @@ server online · trips · fish · anglers on the water · weather API ✓/⚠ ·
 - [ ] Per-spot model once there's enough data (wind direction matters per inlet)
 - [ ] Real water level from DMI (needs free API key) instead of the coarse marine model
 - [ ] Photos on catches
-- [ ] Simple shared password before moving to a public host (Simply.com)
+- [ ] Per-person views ("only my trips" in Insights) now that the app knows who's logged in
 
 ## Fishing log progress
 Aim: ~75 hours fished and ~60 fish before the model is "mostly yours". Log blank trips too!

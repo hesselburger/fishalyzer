@@ -7,3 +7,17 @@ services:
       - "${PORT:-8080}:8080"   # host port; deploy.sh writes PORT to .env on the server
     volumes:
       - ./data:/data  # SQLite database lives here - back this folder up
+
+  # Cloudflare Tunnel: publishes the app on your own domain without opening router ports.
+  # Off unless the server's .env has COMPOSE_PROFILES=tunnel and TUNNEL_TOKEN=... (see README).
+  # In the Cloudflare dashboard, point the tunnel's public hostname at http://fishalyzer:8080
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: fishalyzer-tunnel
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      - fishalyzer

@@ -33,11 +33,32 @@ sudo tailscale serve --bg <port>
 ```
 Now everyone on your tailnet can use `https://<server-name>.<tailnet>.ts.net`. On the phone: open it → Share → *Add to Home Screen*.
 
+### Public on your own domain: Cloudflare Tunnel
+Needs a domain whose DNS is on Cloudflare. No router ports are opened; Cloudflare handles HTTPS.
+1. Cloudflare dashboard → **Zero Trust → Networks → Tunnels → Create a tunnel** (type *Cloudflared*), name it `fishalyzer`.
+   Copy the token from the install command (the long string after `--token`).
+2. On the server, add to `~/fishalyzer/.env` (never commit this):
+   ```bash
+   COMPOSE_PROFILES=tunnel
+   TUNNEL_TOKEN=<token>
+   ```
+   then `cd ~/fishalyzer && docker compose up -d`. The tunnel shows as *Healthy* in the dashboard.
+3. In the tunnel → **Public hostname → Add**: subdomain `fish`, your domain, service `HTTP` → `fishalyzer:8080`.
+4. Create the admin account (see *Accounts* below) **before** turning the tunnel on.
+
 ### Locally on Windows
 ```bash
 docker compose up -d --build
 ```
 → http://localhost:8080
+
+## Accounts
+Everyone logs in with a username and a 4-digit PIN and stays logged in on that device.
+- **First start:** with no accounts yet, open the app from the home network or Tailscale and the login page
+  becomes "Create the admin account". (Never possible through the public Cloudflare address.)
+- **Admin page** (☰ → Admin, admins only): create accounts, set a new PIN (also unlocks), delete accounts.
+- 5 wrong PINs lock an account for 15 min, doubling up to 24 h; 10 failed logins per device per 15 min.
+- From the server shell: `docker exec fishalyzer python -m app.auth add|pin|list ...` (see `app/auth.py`).
 
 ## How to use it
 1. **Spots** (☰ menu) – add your inlets on the map; a tap snaps to the nearest water and fills in its name.

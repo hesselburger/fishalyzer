@@ -133,3 +133,7 @@ table.wx td:first-child, table.wx th:first-child { text-align: left; }
 /* spot map */
 .map { height: 58vh; min-height: 300px; border-radius: var(--radius); overflow: hidden; background: var(--card); z-index: 0; }
 .leaflet-container a { color: #0078a8; }
+/* logged out: only the login form */
+body.loggedout #burger, body.loggedout .logbtn, body.loggedout #statusbar { visibility: hidden; }
+input.pin { letter-spacing: .5em; font-size: 1.3em; text-align: center; }
+#menu a[hidden] { display: none; }

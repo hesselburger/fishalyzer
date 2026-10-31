@@ -5,14 +5,14 @@ import time
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, model, water, weather
+from . import auth, db, model, water, weather
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 STARTED = time.time()
 
@@ -26,6 +26,45 @@ async def no_stale_frontend(request, call_next):
     resp = await call_next(request)
     resp.headers.setdefault("Cache-Control", "no-cache")
     return resp
+
+
+OPEN_API = {"/api/auth/login", "/api/auth/setup", "/api/health"}
+
+
+def _is_https(request):
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+def _set_cookie(resp, request, token):
+    resp.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400, httponly=True, samesite="lax",
+                    secure=_is_https(request), path="/")
+
+
+@app.middleware("http")
+async def require_login(request, call_next):
+    # The page and its scripts load freely; every bit of data sits behind /api and needs a session.
+    path = request.url.path
+    if not path.startswith("/api/") or path in OPEN_API:
+        return await call_next(request)
+    token = request.cookies.get(auth.COOKIE)
+    with db.db() as conn:
+        user, refresh = auth.session_user(conn, token)
+    if not user:
+        return JSONResponse({"detail": "Not logged in"}, status_code=401)
+    request.state.user = user
+    resp = await call_next(request)
+    if refresh:  # slide the cookie's expiry so active users never get logged out
+        _set_cookie(resp, request, token)
+    return resp
+
+
+def _client_ip(request):
+    return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "?")
+
+
+def _admin(request):
+    if not request.state.user["admin"]:
+        raise HTTPException(403, "Only admins can manage users.")
 
 
 # ---------- schemas ----------
@@ -84,6 +123,147 @@ def _model(species=None, min_length=None):
     m["prior_hours"] = prior
     m["confidence"] = model.confidence(m)
     return m
+
+
+# ---------- login and users ----------
+class Login(BaseModel):
+    name: str
+    pin: str
+
+
+class PinChange(BaseModel):
+    old_pin: str
+    new_pin: str
+
+
+class NewUser(BaseModel):
+    name: str
+    pin: str
+    admin: bool = False
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "version": VERSION}
+
+
+def _setup_allowed(conn, request):
+    # First admin can only be created while there are no users, and never through the Cloudflare tunnel
+    # (Cloudflare always adds cf-connecting-ip), so a stranger on the public URL can't claim it first.
+    no_users = not conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
+    return no_users, no_users and "cf-connecting-ip" not in request.headers
+
+
+@app.get("/api/auth/setup")
+def setup_status(request: Request):
+    with db.db() as conn:
+        needed, allowed = _setup_allowed(conn, request)
+    return {"needed": needed, "allowed": allowed}
+
+
+@app.post("/api/auth/setup")
+def setup(body: Login, request: Request):
+    with db.db() as conn:
+        _, allowed = _setup_allowed(conn, request)
+        if not allowed:
+            raise HTTPException(403, "Setup is only possible on a fresh install, from your home network or Tailscale.")
+        try:
+            uid = auth.add_user(conn, body.name, body.pin, admin=True)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        token = auth.new_session(conn, uid)
+    resp = JSONResponse({"id": uid, "name": body.name.strip(), "admin": True})
+    _set_cookie(resp, request, token)
+    return resp
+
+
+@app.post("/api/auth/login")
+def login(body: Login, request: Request):
+    with db.db() as conn:
+        user, err = auth.login(conn, body.name, body.pin, _client_ip(request))
+        token = auth.new_session(conn, user["id"]) if user else None
+    if not user:  # raised outside the block so the failed-attempt counter is committed
+        raise HTTPException(429 if "locked" in err or "Too many" in err else 401, err)
+    resp = JSONResponse({"id": user["id"], "name": user["name"], "admin": bool(user["admin"])})
+    _set_cookie(resp, request, token)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    with db.db() as conn:
+        auth.end_session(conn, request.cookies.get(auth.COOKIE))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+def me(request: Request):
+    return request.state.user
+
+
+@app.put("/api/auth/pin")
+def change_pin(body: PinChange, request: Request):
+    me = request.state.user
+    with db.db() as conn:
+        row = conn.execute("SELECT pin_hash FROM users WHERE id=?", (me["id"],)).fetchone()
+        if not auth.check_pin(body.old_pin, row["pin_hash"]):
+            raise HTTPException(400, "Current PIN is wrong.")
+        try:
+            auth.set_pin(conn, me["id"], body.new_pin, auth.token_hash(request.cookies.get(auth.COOKIE)))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.get("/api/users")
+def list_users(request: Request):
+    _admin(request)
+    with db.db() as conn:
+        return db.rows(conn.execute("""SELECT u.id, u.name, u.admin, u.failed, u.locked_until, u.created_at,
+                                       (SELECT MAX(last_seen) FROM sessions s WHERE s.user_id=u.id) AS last_seen
+                                       FROM users u ORDER BY u.name"""))
+
+
+@app.post("/api/users")
+def create_user(body: NewUser, request: Request):
+    _admin(request)
+    with db.db() as conn:
+        try:
+            return {"id": auth.add_user(conn, body.name, body.pin, body.admin)}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+
+@app.put("/api/users/{uid}")
+def update_user(uid: int, body: dict, request: Request):
+    """Admin: {"pin": "1234"} sets a new PIN (unlocks, logs out everywhere); {"admin": true/false}."""
+    _admin(request)
+    with db.db() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone():
+            raise HTTPException(404, "Unknown user")
+        if "admin" in body:
+            if uid == request.state.user["id"] and not body["admin"]:
+                raise HTTPException(400, "You can't remove your own admin rights.")
+            conn.execute("UPDATE users SET admin=? WHERE id=?", (int(bool(body["admin"])), uid))
+        if "pin" in body:
+            try:
+                keep = auth.token_hash(request.cookies.get(auth.COOKIE)) if uid == request.state.user["id"] else None
+                auth.set_pin(conn, uid, str(body["pin"]), keep)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/users/{uid}")
+def delete_user(uid: int, request: Request):
+    _admin(request)
+    if uid == request.state.user["id"]:
+        raise HTTPException(400, "You can't delete yourself.")
+    with db.db() as conn:
+        conn.execute("DELETE FROM users WHERE id=?", (uid,))
+    return {"ok": True}
 
 
 # ---------- spots ----------
@@ -299,7 +479,6 @@ def insights(species: str = "", min_length: float = 0):
 
 class Feedback(BaseModel):
     text: str
-    author: str = ""
     page: str = ""
 
 
@@ -310,11 +489,12 @@ def list_feedback():
 
 
 @app.post("/api/feedback")
-def add_feedback(f: Feedback):
+def add_feedback(f: Feedback, request: Request):
     if not f.text.strip():
         raise HTTPException(400, "Write something first.")
     with db.db() as conn:
-        cur = conn.execute("INSERT INTO feedback(author, page, text) VALUES (?,?,?)", (f.author.strip(), f.page, f.text.strip()))
+        cur = conn.execute("INSERT INTO feedback(author, page, text) VALUES (?,?,?)",
+                           (request.state.user["name"], f.page, f.text.strip()))
         return {"id": cur.lastrowid}
 
 

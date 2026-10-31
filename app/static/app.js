@@ -4,9 +4,9 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const view = $("#view");
 const SPECIES = ["Perch", "Pike", "Zander", "Sea trout", "Roach", "Garfish", "Cod", "Ide"];
 
+let user = null; // logged-in {id, name, admin}
 const store = {
-  get me() { try { return localStorage.getItem("me") || ""; } catch { return ""; } },
-  set me(v) { try { localStorage.setItem("me", v); } catch {} },
+  get me() { return user ? user.name : ""; },
   get spot() { try { return +localStorage.getItem("spot") || 0; } catch { return 0; } },
   set spot(v) { try { localStorage.setItem("spot", v); } catch {} },
 };
@@ -21,6 +21,7 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json" }, ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
+  if (r.status === 401 && !path.startsWith("/auth/login")) { showLogin(); throw new Error("Please log in"); }
   if (!r.ok) {
     let msg = r.statusText;
     try { msg = (await r.json()).detail || msg; } catch {}
@@ -168,8 +169,7 @@ async function viewToday() {
   const recent = await api("/trips?limit=3");
   const me = store.me;
   view.innerHTML = `
-    <div class="row spread"><h1>${me ? `Hi ${esc(me)}` : "Fishalyzer"}</h1>
-      <button class="sm ghost" id="who">${me ? "Not you?" : "Set your name"}</button></div>
+    <h1>Hi ${esc(me)}</h1>
     <div class="card"><div class="row spread"><div><h3>Been fishing?</h3>
       <div class="muted">Log the day: where, when, how many fish and the best ones. Blank days count too.</div></div></div>
       <a class="btn primary" href="#log" style="display:block;margin-top:10px">＋ Log a trip</a>
@@ -178,10 +178,6 @@ async function viewToday() {
     <h2>Forecast</h2>
     <div class="card"><div class="row"><select id="fcspot" class="grow">${spotOptions(store.spot)}</select><a class="btn sm" href="#spot" title="Add a spot on the map">＋ Spot</a></div><div id="fc" style="margin-top:12px"><div class="empty">Loading forecast…</div></div></div>`;
 
-  $("#who").onclick = async () => {
-    const name = await askText("Your name (pre-selected as angler when you log)", store.me);
-    if (name != null) { store.me = name.trim(); viewToday(); }
-  };
   $$("[data-date]").forEach((el) => (el.onclick = () => dayModal(el.dataset.date)));
   $("#fcspot").onchange = (e) => { store.spot = +e.target.value; selDay = null; loadForecast(); };
   loadForecast();
@@ -631,7 +627,7 @@ async function viewFeedback() {
     <form class="card" id="fbform">
       <label style="margin-top:0">Something broken, confusing or missing? Ideas welcome.</label>
       <textarea name="text" required rows="4" placeholder="e.g. The calendar should show the spot name…"></textarea>
-      <label>From</label><input name="author" value="${esc(store.me)}" placeholder="Your name">
+      <div class="muted small" style="margin-top:6px">Sent as ${esc(store.me)}</div>
       <button class="primary block">Send feedback</button></form>
     <h2>All feedback (${items.length})</h2>
     <div class="card">${items.map((f) => `<div class="item" style="${f.done ? "opacity:.5" : ""}">
@@ -642,9 +638,8 @@ async function viewFeedback() {
   $("#fbform").onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
-    if (f.author.value.trim() && !store.me) store.me = f.author.value.trim();
     try {
-      await api("/feedback", { method: "POST", body: { text: f.text.value, author: f.author.value, page: feedbackFrom } });
+      await api("/feedback", { method: "POST", body: { text: f.text.value, page: feedbackFrom } });
       toast("Thanks - feedback saved"); viewFeedback();
     } catch (err) { toast(err.message, true); }
   };
@@ -655,6 +650,114 @@ async function viewFeedback() {
   }));
 }
 
+// ---------- Login & account ----------
+const pinInput = (name, auto = "current-password") =>
+  `<input name="${name}" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="${auto}" required placeholder="••••" class="pin">`;
+function showLogin() {
+  if (document.body.classList.contains("loggedout")) return;
+  user = null;
+  document.body.classList.add("loggedout");
+  toggleMenu(false); closeModal();
+  let last = "";
+  try { last = localStorage.getItem("lastUser") || ""; } catch {}
+  view.innerHTML = `<h1>Log in</h1>
+    <form class="card" id="loginform">
+      <label style="margin-top:0">Username</label><input name="name" autocomplete="username" autocapitalize="off" required value="${esc(last)}">
+      <label>PIN</label>${pinInput("pin")}
+      <button class="primary block" style="margin-top:14px">Log in</button>
+      <div class="muted small" style="margin-top:8px">No account? Ask whoever runs Fishalyzer to add you.</div></form>`;
+  const f = $("#loginform");
+  (last ? f.pin : f.name).focus();
+  let setup = false;
+  api("/auth/setup").then((st) => {
+    if (!st.needed) return;
+    setup = st.allowed;
+    $("h1", view).textContent = st.allowed ? "Create the admin account" : "Not set up yet";
+    $("#loginform .muted").textContent = st.allowed
+      ? "First start: no accounts exist yet. This creates the admin, who can then add everyone else."
+      : "No accounts exist yet. Open Fishalyzer from the home network or over Tailscale to create the admin account.";
+    $("#loginform button").textContent = "Create admin";
+    $("#loginform button").disabled = !st.allowed;
+  }).catch(() => {});
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      user = await api(setup ? "/auth/setup" : "/auth/login", { method: "POST", body: { name: f.name.value, pin: f.pin.value } });
+      try { localStorage.setItem("lastUser", user.name); } catch {}
+      document.body.classList.remove("loggedout");
+      start();
+    } catch (err) { f.pin.value = ""; toast(err.message, true); }
+  };
+}
+
+async function viewAccount() {
+  view.innerHTML = `<h1>Account</h1>
+    <div class="card row spread"><div><b>${esc(user.name)}</b>${user.admin ? ` <span class="chip on" style="cursor:default">admin</span>` : ""}
+      <div class="muted small">You stay logged in on this device until you log out.</div></div>
+      <button class="sm ghost" id="logout">Log out</button></div>
+    <h2>Change PIN</h2>
+    <form class="card" id="pinform">
+      <div class="grid2"><div><label style="margin-top:0">Current PIN</label>${pinInput("old_pin")}</div>
+        <div><label style="margin-top:0">New PIN</label>${pinInput("new_pin", "new-password")}</div></div>
+      <button class="primary block" style="margin-top:12px">Change PIN</button>
+      <div class="muted small" style="margin-top:6px">Logs you out on your other devices.</div></form>
+    ${user.admin ? `<a class="btn block" href="#admin" style="margin-top:12px">Admin: manage accounts →</a>` : ""}`;
+  $("#logout").onclick = async () => {
+    await api("/auth/logout", { method: "POST" }).catch(() => {});
+    showLogin();
+  };
+  $("#pinform").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await api("/auth/pin", { method: "PUT", body: { old_pin: f.old_pin.value, new_pin: f.new_pin.value } });
+      f.reset(); toast("PIN changed");
+    } catch (err) { toast(err.message, true); }
+  };
+}
+
+async function viewAdmin() {
+  if (!user.admin) { view.innerHTML = `<div class="empty">Only admins can manage accounts.</div>`; return; }
+  view.innerHTML = `<h1>Admin</h1><div id="users"><div class="empty">Loading…</div></div>`;
+  await renderUsers();
+}
+
+async function renderUsers() {
+  const users = await api("/users");
+  const locked = (u) => u.locked_until && u.locked_until > localNow();
+  $("#users").innerHTML = `
+    <form class="card" id="userform"><h3>Create account</h3>
+      <div class="grid2"><div><label>Username</label><input name="name" required autocapitalize="off" autocomplete="off"></div>
+        <div><label>PIN (4 digits)</label><input name="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required autocomplete="off"></div></div>
+      <label class="row" style="gap:6px"><input type="checkbox" name="admin" style="width:auto"> Admin (can manage accounts)</label>
+      <button class="primary block" style="margin-top:10px">Create account</button>
+      <div class="muted small" style="margin-top:6px">Tell them their username and PIN in person; they can change the PIN under Account.</div></form>
+    <h2>Accounts (${users.length})</h2>
+    <div class="card">${users.map((u) => `<div class="item row spread">
+      <div><b>${esc(u.name)}</b>${u.admin ? ` <span class="muted small">admin</span>` : ""}
+        <div class="muted small">${u.last_seen ? "last seen " + esc(u.last_seen.slice(0, 16).replace("T", " ")) : "never logged in"}${locked(u) ? ` · <b style="color:var(--bad)">locked until ${esc(u.locked_until.slice(11, 16))}</b>` : u.failed ? ` · ${u.failed} wrong PIN${u.failed > 1 ? "s" : ""}` : ""}</div></div>
+      <span class="row" style="gap:4px"><button type="button" class="sm ghost" data-pin="${u.id}" data-name="${esc(u.name)}">${locked(u) ? "Unlock / new PIN" : "New PIN"}</button>
+        ${u.id === user.id ? "" : `<button type="button" class="x" data-deluser="${u.id}" data-name="${esc(u.name)}" aria-label="Delete">✕</button>`}</span></div>`).join("")}</div>`;
+  $("#userform").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await api("/users", { method: "POST", body: { name: f.name.value, pin: f.pin.value, admin: f.admin.checked } });
+      toast(`Created ${f.name.value}`); renderUsers();
+    } catch (err) { toast(err.message, true); }
+  };
+  $$("[data-pin]").forEach((b) => (b.onclick = async () => {
+    const pin = await askText(`New 4-digit PIN for ${b.dataset.name}`);
+    if (pin == null) return;
+    try { await api(`/users/${b.dataset.pin}`, { method: "PUT", body: { pin: pin.trim() } }); toast(`New PIN set for ${b.dataset.name}`); renderUsers(); }
+    catch (err) { toast(err.message, true); }
+  }));
+  $$("[data-deluser]").forEach((b) => (b.onclick = async () => {
+    if (!(await askConfirm(`Delete ${b.dataset.name}? Their logged trips stay.`))) return;
+    await api(`/users/${b.dataset.deluser}`, { method: "DELETE" }); renderUsers();
+  }));
+}
+
 // ---------- router ----------
 function toggleMenu(open = $("#menu").hidden) {
   $("#menu").hidden = !open;
@@ -662,9 +765,10 @@ function toggleMenu(open = $("#menu").hidden) {
 }
 $("#burger").onclick = () => toggleMenu();
 $("#menu").onclick = (e) => { if (e.target.id === "menu") toggleMenu(false); };
-const routes = { today: viewToday, calendar: viewCalendar, log: viewLog, insights: viewInsights, spots: viewSpots, spot: viewSpotMap, feedback: viewFeedback };
+const routes = { today: viewToday, calendar: viewCalendar, log: viewLog, insights: viewInsights, spots: viewSpots, spot: viewSpotMap, feedback: viewFeedback, account: viewAccount, admin: viewAdmin };
 let currentHash = "#today";
 async function route() {
+  if (!user) return; // the login screen stays until login succeeds
   const [name = "today", query = ""] = location.hash.slice(1).split("?");
   const page = name || "today";
   if (page === "spot" && !currentHash.startsWith("#spot")) spotReturnTo = currentHash;
@@ -674,15 +778,26 @@ async function route() {
   $(".logbtn").classList.toggle("active", page === "log");
   toggleMenu(false);
   closeModal();
-  try { await (routes[page] || viewToday)(new URLSearchParams(query)); } catch (e) { view.innerHTML = `<div class="empty">Something went wrong: ${esc(e.message)}</div>`; }
+  try { await (routes[page] || viewToday)(new URLSearchParams(query)); } catch (e) { if (user) view.innerHTML = `<div class="empty">Something went wrong: ${esc(e.message)}</div>`; }
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", route);
-(async () => {
+let started = false;
+async function start() {
+  $("#menu [data-tab=admin]").hidden = !user.admin;
   try { await loadSpots(); } catch {}
   try { glossary = await api("/glossary"); } catch {}
   route();
   refreshStatus();
-  setInterval(refreshStatus, 60000);
+  if (!started) setInterval(() => user && refreshStatus(), 60000);
+  started = true;
+}
+(async () => {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  try { user = await api("/auth/me"); } catch (e) {
+    // a 401 has already shown the login screen; anything else means the server can't be reached
+    if (!document.body.classList.contains("loggedout")) view.innerHTML = `<div class="empty">Can't reach the server: ${esc(e.message)}</div>`;
+    return;
+  }
+  start();
 })();
