@@ -1,0 +1,9 @@
+services:
+  fishalyzer:
+    build: .
+    container_name: fishalyzer
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8090}:8080"   # host port; goblinserver already uses 8080 for something else
+    volumes:
+      - ./data:/data  # SQLite database lives here - back this folder up
