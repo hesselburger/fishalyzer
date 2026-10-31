@@ -1,0 +1,9 @@
+{
+  "name": "Fishalyzer",
+  "short_name": "Fishalyzer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1f26",
+  "theme_color": "#0f2a33",
+  "icons": [{ "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

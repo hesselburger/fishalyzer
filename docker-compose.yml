@@ -1,0 +1,9 @@
+services:
+  fishalyzer:
+    build: .
+    container_name: fishalyzer
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"   # host port; deploy.sh writes PORT to .env on the server
+    volumes:
+      - ./data:/data  # SQLite database lives here - back this folder up

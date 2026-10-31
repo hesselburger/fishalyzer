@@ -1,0 +1,7 @@
+data/
+.git/
+**/__pycache__/
+*.md
+deploy.sh
+deploy.env
+.env
