@@ -1,5 +1,5 @@
 // Minimal service worker: makes the app installable and shows the last-loaded shell when offline.
-const CACHE = "fishalyzer-v1";
+const CACHE = "fishalyzer-v2";
 const SHELL = ["/", "/static/style.css", "/static/app.js", "/static/icon.svg", "/static/manifest.webmanifest"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));

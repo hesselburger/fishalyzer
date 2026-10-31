@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import os
 import time
@@ -6,7 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -588,6 +589,21 @@ def sw():
     return FileResponse(os.path.join(STATIC, "sw.js"), media_type="application/javascript")
 
 
+def _fingerprinted_index():
+    # Cloudflare overrides our no-cache on .js/.css with a 4 h browser cache, so the page asks for
+    # app.js?v=<content hash>: every deploy changes the URL and no cache can serve old code.
+    with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    for name in ("app.js", "style.css"):
+        with open(os.path.join(STATIC, name), "rb") as f:
+            v = hashlib.sha256(f.read()).hexdigest()[:10]
+        html = html.replace(f"/static/{name}\"", f"/static/{name}?v={v}\"")
+    return html
+
+
+INDEX_HTML = _fingerprinted_index()
+
+
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC, "index.html"))
+    return HTMLResponse(INDEX_HTML)
