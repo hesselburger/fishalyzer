@@ -96,7 +96,7 @@ def forecast(lat, lon):
     hit = _forecast_cache.get(key)
     if hit and time.time() - hit[0] < 3600:
         return hit[1]
-    data = fetch(*key, past_days=2, forecast_days=7)
+    data = fetch(*key, past_days=2, forecast_days=14)
     _forecast_cache[key] = (time.time(), data)
     return data
 

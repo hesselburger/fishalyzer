@@ -211,8 +211,8 @@ function renderForecast() {
     <div class="days" style="margin-top:14px">${f.daily.map((x) => `
       <div class="d ${x.date === selDay ? "on" : ""}" data-day="${x.date}"><div class="small muted">${dayName(x.date)}</div>${scoreBadge(x.best)}</div>`).join("")}</div>
     ${hourChart(hours)}
-    <div class="row spread" style="margin-top:14px"><h3 style="margin:0">Best 3-hour windows this week</h3>${GLOSS_LINK}</div>
-    ${f.windows.map((w) => `<div class="window">${scoreBadge(w.score)}<div><b>${dayName(w.start.slice(0, 10))} ${hm(w.start)}-${pad(+w.end.slice(11, 13) + 1)}:00</b>
+    <div class="row spread" style="margin-top:14px"><h3 style="margin:0">Best 3-hour windows, next 14 days</h3>${GLOSS_LINK}</div>
+    ${f.windows.map((w) => `<div class="window">${scoreBadge(w.score)}<div><b>${new Date(w.start.slice(0, 10) + "T12:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })} ${hm(w.start)}-${pad(+w.end.slice(11, 13) + 1)}:00</b>
       <div>${reasonChips(w.reasons)}</div></div></div>`).join("") || `<div class="muted">No daylight windows in range.</div>`}
     <div class="muted small" style="margin-top:10px">Model is ${conf}% your own data${conf < 30 ? " - mostly folklore so far. Log trips (also blank ones!) to teach it." : "."}
       50 = an average hour for you. Tap a tag to see what it means.</div>`;

@@ -14,7 +14,7 @@ server online · trips · fish · anglers on the water · weather API ✓/⚠ ·
 - [x] Weather per hour from Open-Meteo (air + sea temp + water level), auto-fetched when a trip is saved
 - [x] Sun/moon/solunar computed locally
 - [x] Own learning model (catch rate per condition bin, shrunk towards a weak folklore prior)
-- [x] 7-day forecast per spot, hourly score, best 3-hour windows with reasons
+- [x] 14-day forecast per spot, hourly score, best 3-hour windows with reasons
 - [x] Calendar with catches, trips and forecast dots; day view with weather table, edit/delete
 - [x] v0.2: log a trip afterwards - one day, one spot, fish count per species + any number of measured "top fish"
 - [x] v0.2: burger menu + "＋ Log" header (nothing at the bottom of the screen)
