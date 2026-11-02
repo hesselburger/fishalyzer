@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from . import auth, db, logbooks, model, water, weather
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 STARTED = time.time()
 
