@@ -15,6 +15,7 @@ COLS = ["temp", "pressure", "wind_speed", "wind_dir", "gusts", "cloud", "precip"
 
 status = {"last_ok": None, "last_error": None, "last_error_at": None, "requests": 0}
 _forecast_cache = {}
+_forecast_failed = {}  # grid cell -> time of the last failed forecast fetch
 
 
 def grid(lat, lon):
@@ -105,7 +106,14 @@ def forecast(lat, lon):
     hit = _forecast_cache.get(key)
     if hit and time.time() - hit[0] < 3600:
         return hit[1]
-    data = fetch(*key, past_days=2, forecast_days=14)
+    # While Open-Meteo is down every page would wait for it again (up to 20 s when it hangs); fail fast for 2 min instead.
+    if time.time() - _forecast_failed.get(key, 0) < 120:
+        raise RuntimeError(f"still down, retrying shortly ({status['last_error']})")
+    try:
+        data = fetch(*key, past_days=2, forecast_days=14)
+    except Exception:
+        _forecast_failed[key] = time.time()
+        raise
     _forecast_cache[key] = (time.time(), data)
     return data
 

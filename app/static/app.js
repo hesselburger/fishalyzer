@@ -188,11 +188,17 @@ async function viewToday() {
 async function loadForecast() {
   const box = $("#fc");
   if (!box) return;
+  // A slow answer for another logbook or spot must not land on top of the one now open.
+  const lb = user.logbook.id, spot = store.spot, stale = () => lb !== user.logbook.id || spot !== store.spot || !box.isConnected;
+  let f;
   try {
-    lastForecast = await api(`/forecast?spot_id=${store.spot}`);
+    f = await api(`/forecast?spot_id=${spot}`);
   } catch (e) {
-    box.innerHTML = `<div class="empty">Couldn't get the forecast: ${esc(e.message)}</div>`; return;
+    if (!stale()) box.innerHTML = `<div class="empty">Couldn't get the forecast: ${esc(e.message)}</div>`;
+    return;
   }
+  if (stale()) return;
+  lastForecast = f;
   renderForecast();
 }
 
@@ -252,8 +258,10 @@ async function viewCalendar() {
   const first = new Date(y, m - 1, 1);
   const startOffset = (first.getDay() + 6) % 7; // Monday first
   const daysIn = new Date(y, m, 0).getDate();
-  const data = await api(`/calendar?month=${calMonth}`);
-  if (!lastForecast) { try { lastForecast = await api(`/forecast?spot_id=${store.spot}`); } catch {} }
+  const lb = user.logbook.id, month = calMonth;
+  const data = await api(`/calendar?month=${month}`);
+  if (lb !== user.logbook.id || month !== calMonth || !currentHash.startsWith("#calendar")) return; // switched away meanwhile
+  // Forecast dots only from what Today already loaded: the calendar itself never waits on the weather service.
   const fc = Object.fromEntries((lastForecast?.daily || []).map((d) => [d.date, d.best]));
   const t = today();
   let cells = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => `<div class="h">${d}</div>`).join("");
