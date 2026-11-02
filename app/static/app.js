@@ -42,7 +42,7 @@ const dir = (deg) => deg == null ? "" : DIRS[Math.floor(((deg + 22.5) % 360) / 4
 function scoreColor(s) {
   // red (0) -> yellow (50) -> green (100)
   const lerp = (a, b, t) => Math.round(a + (b - a) * t);
-  const [r1, g1, b1, r2, g2, b2, t] = s < 50 ? [224, 98, 90, 232, 197, 71, s / 50] : [232, 197, 71, 76, 195, 138, (s - 50) / 50];
+  const [r1, g1, b1, r2, g2, b2, t] = s < 50 ? [196, 85, 63, 217, 180, 74, s / 50] : [217, 180, 74, 143, 179, 91, (s - 50) / 50];
   return `rgb(${lerp(r1, r2, t)},${lerp(g1, g2, t)},${lerp(b1, b2, t)})`;
 }
 const scoreBadge = (s, cls = "sm") => `<span class="score ${cls}" style="background:${scoreColor(s)}">${s}</span>`;
@@ -135,11 +135,12 @@ async function refreshStatus() {
     const wxErr = s.weather.last_error_at && (!s.weather.last_ok || s.weather.last_error_at > s.weather.last_ok);
     const color = wxErr ? "var(--mid)" : "var(--good)";
     const pct = Math.round(s.model.confidence * 100);
-    bar.innerHTML = `<span class="dot" style="background:${color}"></span><b>Online</b> · ${s.db.trips} trips · ${s.db.fish} fish` +
-      ` · wx ${wxErr ? "⚠" : "✓"} · learned <b>${pct}%</b>`;
+    bar.innerHTML = `<span class="dot" style="background:${color}"></span><small>learned</small> <b>${pct}%</b>`;
+    bar.title = `Online · ${s.db.trips} trips · ${s.db.fish} fish · weather ${wxErr ? "failing" : "OK"} · learned ${pct}% from your data`;
     bar.onclick = () => openModal(statusDetails(s));
   } catch (e) {
-    bar.innerHTML = `<span class="dot" style="background:var(--bad)"></span><b>Offline</b> · server unreachable`;
+    bar.innerHTML = `<span class="dot" style="background:var(--bad)"></span><b>Offline</b>`;
+    bar.title = "Server unreachable";
   }
 }
 function statusDetails(s) {
@@ -169,14 +170,14 @@ async function viewToday() {
   const recent = await api("/trips?limit=3");
   const me = store.me;
   view.innerHTML = `
-    <h1>Hi ${esc(me)}</h1>
+    <div class="greet"><div class="muted">${longDate(today())}</div><h1>Hi ${esc(me)}</h1></div>
+    <div class="card hero"><div class="row"><select id="fcspot" class="grow" aria-label="Spot">${spotOptions(store.spot)}</select><a class="btn sm" href="#spot" title="Add a spot on the map">＋ Spot</a></div><div id="fc" style="margin-top:12px"><div class="empty">Reading the water…</div></div></div>
+    <h2>Ship's log</h2>
     <div class="card"><div class="row spread"><div><h3>Been fishing?</h3>
       <div class="muted">Log the day: where, when, how many fish and the best ones. Blank days count too.</div></div></div>
       <a class="btn primary" href="#log" style="display:block;margin-top:10px">＋ Log a trip</a>
       ${recent.length ? `<div style="margin-top:10px">${recent.map((t) => `<div class="item row spread" data-date="${t.start.slice(0, 10)}" style="cursor:pointer">
-        <div><b>${longDate(t.start.slice(0, 10))}</b><div class="muted small">${esc(t.spot_name)} · ${hm(t.start)}-${hm(t.end)}</div></div><b>🐟 ${t.n_fish}</b></div>`).join("")}</div>` : ""}</div>
-    <h2>Forecast</h2>
-    <div class="card"><div class="row"><select id="fcspot" class="grow">${spotOptions(store.spot)}</select><a class="btn sm" href="#spot" title="Add a spot on the map">＋ Spot</a></div><div id="fc" style="margin-top:12px"><div class="empty">Loading forecast…</div></div></div>`;
+        <div><b>${longDate(t.start.slice(0, 10))}</b><div class="muted small">${esc(t.spot_name)} · ${hm(t.start)}-${hm(t.end)}</div></div><b>🐟 ${t.n_fish}</b></div>`).join("")}</div>` : ""}</div>`;
 
   $$("[data-date]").forEach((el) => (el.onclick = () => dayModal(el.dataset.date)));
   $("#fcspot").onchange = (e) => { store.spot = +e.target.value; selDay = null; loadForecast(); };
@@ -203,8 +204,8 @@ function renderForecast() {
   const best = hours.reduce((a, h) => (h.features.light !== "night" && (!a || h.score > a.score) ? h : a), null);
   const conf = Math.round(f.confidence * 100);
   box.innerHTML = `
-    <div class="row" style="gap:14px">${scoreBadge(d.best, "big")}
-      <div class="grow"><b>${longDate(d.date)}</b>
+    <div class="row" style="gap:14px;flex-wrap:nowrap">${gauge(d.best)}
+      <div class="grow"><b>${longDate(d.date)}</b><div class="omen">${omen(d.best)}</div>
         <div class="muted">Best around ${d.best_time || "-"}${best?.expected != null ? ` · ~${best.expected} fish/hour` : ""}</div>
         <div>${reasonChips(best?.reasons)}</div></div></div>
     <div class="days" style="margin-top:14px">${f.daily.map((x) => `
@@ -218,6 +219,17 @@ function renderForecast() {
   $$("[data-day]", box).forEach((el) => (el.onclick = () => { selDay = el.dataset.day; renderForecast(); }));
 }
 
+// The forecast dial: a 270° arc filled to the score, like a ship's gauge.
+function gauge(s) {
+  const len = 2 * Math.PI * 40 * 0.75;
+  return `<svg class="gauge" viewBox="0 0 100 100" role="img" aria-label="Score ${s} of 100">
+    <circle cx="50" cy="50" r="40" class="track" stroke-dasharray="${len} 999" transform="rotate(135 50 50)"/>
+    <circle cx="50" cy="50" r="40" class="fill" stroke="${scoreColor(s)}" stroke-dasharray="${len * s / 100} 999" transform="rotate(135 50 50)"/>
+    <text x="50" y="58" text-anchor="middle">${s}</text></svg>`;
+}
+const omen = (s) => s >= 75 ? "Something stirs below. Get out there." : s >= 60 ? "The water feels promising."
+  : s >= 45 ? "An ordinary tide. Patience pays." : s >= 30 ? "Quiet waters. The perch are sulking." : "Dead calm below. Best mend your nets.";
+
 function hourChart(hours) {
   if (!hours.length) return "";
   const w = 24 * 14, h = 110;
@@ -227,9 +239,9 @@ function hourChart(hours) {
     const tip = `${x.time.slice(11, 16)} score ${x.score} · ${x.wx.temp ?? "?"}° · ${x.wx.wind_speed ?? "?"} m/s ${dir(x.wx.wind_dir)} · ${x.wx.pressure ?? "?"} hPa`;
     return `<rect x="${i * 14 + 1}" y="${h - 16 - bh}" width="12" height="${bh}" rx="2" fill="${scoreColor(x.score)}" opacity="${night ? 0.35 : 1}"><title>${tip}</title></rect>`;
   }).join("");
-  const labels = [0, 3, 6, 9, 12, 15, 18, 21].map((i) => `<text x="${i * 14 + 7}" y="${h - 3}" font-size="9" fill="#8fb0b8" text-anchor="middle">${pad(i)}</text>`).join("");
+  const labels = [0, 3, 6, 9, 12, 15, 18, 21].map((i) => `<text x="${i * 14 + 7}" y="${h - 3}" font-size="9" fill="#9ba590" text-anchor="middle">${pad(i)}</text>`).join("");
   return `<svg class="hourchart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="margin-top:12px">
-    <line x1="0" x2="${w}" y1="${h - 16 - (h - 18) / 2}" y2="${h - 16 - (h - 18) / 2}" stroke="#24505e" stroke-dasharray="3 3"/>${bars}${labels}</svg>
+    <line x1="0" x2="${w}" y1="${h - 16 - (h - 18) / 2}" y2="${h - 16 - (h - 18) / 2}" stroke="#5e5541" stroke-dasharray="3 3"/>${bars}${labels}</svg>
     <div class="muted small">Hourly score (faded = night, dashed = average). Tap a bar for weather.</div>`;
 }
 
@@ -255,7 +267,7 @@ async function viewCalendar() {
   const monthName = first.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   view.innerHTML = `<div class="row spread"><button class="sm ghost" id="prev">‹</button><h1>${monthName}</h1><button class="sm ghost" id="next">›</button></div>
     <div class="cal">${cells}</div>
-    <div class="muted small" style="margin-top:10px">Tap a day to see or log trips. 🐟 fish caught · grey dot = trip logged · coloured dot = forecast for ${esc(lastForecast?.spot?.name || "your spot")}</div>`;
+    <div class="muted small" style="margin-top:10px">Tap a day to see or log trips. 🐟 fish caught · amber dot = trip logged · coloured dot = forecast for ${esc(lastForecast?.spot?.name || "your spot")}</div>`;
   const shift = (n) => { const d = new Date(y, m - 1 + n, 1); calMonth = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; viewCalendar(); };
   $("#prev").onclick = () => shift(-1);
   $("#next").onclick = () => shift(1);
@@ -270,7 +282,7 @@ async function dayModal(d) {
   const future = d > today();
   const body = openModal(`<h1>${longDate(d)}</h1>
     ${fcDay ? `<div class="card row">${scoreBadge(fcDay.best)}<div>Forecast best ${fcDay.best_time} at ${esc(lastForecast.spot.name)}</div></div>` : ""}
-    ${data.trips.map((t) => `<div class="card">
+    ${data.trips.map((t) => `<div class="card journal">
       <div class="row spread"><h3>${esc(t.spot_name)} · ${hm(t.start)}-${hm(t.end)}</h3><b>🐟 ${t.n_fish}</b></div>
       <div class="muted">${esc(t.anglers)}${t.counts.length ? " · " + t.counts.map((c) => `${c.count} ${esc(c.species)}`).join(", ") : " · blank day"}</div>
       ${t.notes ? `<div class="muted small">${esc(t.notes)}</div>` : ""}
@@ -555,11 +567,11 @@ async function viewSpotMap(params) {
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, crossOrigin: "anonymous", attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
-  others.forEach((o) => L.circleMarker([o.lat, o.lon], { radius: 6, color: "#8fb0b8", weight: 2, fillOpacity: 0.4 }).bindTooltip(o.name).addTo(map));
+  others.forEach((o) => L.circleMarker([o.lat, o.lon], { radius: 6, color: "#9ba590", weight: 2, fillOpacity: 0.4 }).bindTooltip(o.name).addTo(map));
 
   let chosen = s.id ? L.latLng(s.lat, s.lon) : null, tapped = null;
   const pin = L.marker(chosen || start, { draggable: true });
-  const tapDot = L.circleMarker(start, { radius: 4, color: "#f2a541", weight: 2 });
+  const tapDot = L.circleMarker(start, { radius: 4, color: "#e3a33c", weight: 2 });
   const showCoords = () => ($("#coords").textContent = chosen ? `${chosen.lat.toFixed(5)}, ${chosen.lng.toFixed(5)}` : "No point chosen yet.");
   let suggested = "", lookup = 0;
   const nameWater = async (ll) => {
@@ -657,10 +669,19 @@ function showLogin() {
   if (document.body.classList.contains("loggedout")) return;
   user = null;
   document.body.classList.add("loggedout");
-  toggleMenu(false); closeModal();
+  closeModal();
   let last = "";
   try { last = localStorage.getItem("lastUser") || ""; } catch {}
-  view.innerHTML = `<h1>Log in</h1>
+  view.innerHTML = `<div class="title-screen" aria-hidden="true">
+      <svg viewBox="0 0 320 130" class="scene">
+        <circle cx="262" cy="30" r="14" class="moon"/>
+        <g class="boat"><path d="M112 92h92l-12 13h-68z" class="hull"/><rect x="150" y="76" width="28" height="16" class="hull"/>
+          <path d="M132 92V46" class="mast"/><circle cx="132" cy="56" r="3.5" class="lantern"/></g>
+        <path class="wave w1" d="M-120 100q20-8 40 0t40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0V130H-120z"/>
+        <path class="wave w2" d="M-120 110q20-6 40 0t40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0 40 0V130H-120z"/>
+      </svg>
+      <div class="logo">Fishalyzer</div><div class="tag">A logbook for the brackish deep</div></div>
+    <h1>Log in</h1>
     <form class="card" id="loginform">
       <label style="margin-top:0">Username</label><input name="name" autocomplete="username" autocapitalize="off" required value="${esc(last)}">
       <label>PIN</label>${pinInput("pin")}
@@ -759,12 +780,6 @@ async function renderUsers() {
 }
 
 // ---------- router ----------
-function toggleMenu(open = $("#menu").hidden) {
-  $("#menu").hidden = !open;
-  $("#burger").setAttribute("aria-expanded", open);
-}
-$("#burger").onclick = () => toggleMenu();
-$("#menu").onclick = (e) => { if (e.target.id === "menu") toggleMenu(false); };
 const routes = { today: viewToday, calendar: viewCalendar, log: viewLog, insights: viewInsights, spots: viewSpots, spot: viewSpotMap, feedback: viewFeedback, account: viewAccount, admin: viewAdmin };
 let currentHash = "#today";
 async function route() {
@@ -774,9 +789,11 @@ async function route() {
   if (page === "spot" && !currentHash.startsWith("#spot")) spotReturnTo = currentHash;
   if (page === "feedback" && !currentHash.startsWith("#feedback")) feedbackFrom = currentHash.slice(1).split("?")[0];
   currentHash = location.hash || "#today";
-  $$("#menu a").forEach((a) => a.classList.toggle("active", a.dataset.tab === page));
+  $$("#nav a").forEach((a) => {
+    a.classList.toggle("active", a.dataset.tab === page);
+    if (a.dataset.tab === page) a.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
   $(".logbtn").classList.toggle("active", page === "log");
-  toggleMenu(false);
   closeModal();
   try { await (routes[page] || viewToday)(new URLSearchParams(query)); } catch (e) { if (user) view.innerHTML = `<div class="empty">Something went wrong: ${esc(e.message)}</div>`; }
   window.scrollTo(0, 0);
@@ -784,7 +801,7 @@ async function route() {
 window.addEventListener("hashchange", route);
 let started = false;
 async function start() {
-  $("#menu [data-tab=admin]").hidden = !user.admin;
+  $("#nav [data-tab=admin]").hidden = !user.admin;
   try { await loadSpots(); } catch {}
   try { glossary = await api("/glossary"); } catch {}
   route();

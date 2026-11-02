@@ -3,7 +3,7 @@
 ```
 Proof of concept   ████████████████████  100%   (v0.3.0 · 2026-10-31)
 Deployed to server ████████████████████  100%   (goblinserver + Cloudflare tunnel)
-Model learning     ░░░░░░░░░░░░░░░░░░░░    0%   (live value: status bar in the app)
+Model learning     █████████████░░░░░░░   67%   (2026-11-02: 4 trips, 67 fish, 25 h · live value: status bar in the app)
 ```
 
 Live health is in the app's **status bar** (top of every page, tap it for details):

@@ -3,32 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f2a33">
+  <meta name="theme-color" content="#070d0b">
   <title>Fishalyzer</title>
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon.svg">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&display=swap">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <div class="fog" aria-hidden="true"></div>
   <header id="top">
-    <button id="burger" aria-label="Menu" aria-expanded="false">☰</button>
-    <a href="#today" class="brand">🎣 Fishalyzer</a>
-    <a href="#log" class="logbtn">＋ Log</a>
-  </header>
-  <div id="statusbar" title="Tap for details"></div>
-  <div id="menu" hidden>
-    <nav>
-      <a href="#today" data-tab="today"><span>🎣</span>Today</a>
-      <a href="#calendar" data-tab="calendar"><span>📅</span>Calendar</a>
-      <a href="#insights" data-tab="insights"><span>📊</span>Insights</a>
-      <a href="#spots" data-tab="spots"><span>📍</span>Spots</a>
-      <a href="#feedback" data-tab="feedback"><span>💬</span>Feedback</a>
-      <a href="#account" data-tab="account"><span>👤</span>Account</a>
-      <a href="#admin" data-tab="admin" hidden><span>🛠️</span>Admin</a>
+    <div class="bar">
+      <a href="#today" class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 16c5-7 14-9 20-3l5-4v14l-5-4c-6 6-15 4-20-3z"/><circle cx="9" cy="15" r="1.6" class="eye"/></svg>Fishalyzer</a>
+      <button id="statusbar" class="lamp" title="System status"></button>
+      <a href="#log" class="logbtn">＋ Log</a>
+    </div>
+    <nav id="nav">
+      <a href="#today" data-tab="today"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>Today</a>
+      <a href="#calendar" data-tab="calendar"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="1.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>Log book</a>
+      <a href="#insights" data-tab="insights"><svg viewBox="0 0 24 24"><path d="M4 20V11M10 20V5M16 20v-7M21 20H3"/></svg>Insights</a>
+      <a href="#spots" data-tab="spots"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><path d="M12 7v13M7 11h10M5 15a7 7 0 0 0 14 0"/></svg>Spots</a>
+      <a href="#feedback" data-tab="feedback"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>Feedback</a>
+      <a href="#account" data-tab="account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-5 15-5 16 0"/></svg>Account</a>
+      <a href="#admin" data-tab="admin" hidden><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M21 12v2"/></svg>Admin</a>
     </nav>
-  </div>
+  </header>
   <main id="view"></main>
   <div id="modal" hidden><div class="sheet"><button class="close" aria-label="Close">✕</button><div class="body"></div></div></div>
   <div id="toast" hidden></div>
