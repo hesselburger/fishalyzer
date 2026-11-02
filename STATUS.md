@@ -1,7 +1,7 @@
 # Fishalyzer – project status
 
 ```
-Proof of concept   ████████████████████  100%   (v0.3.0 · 2026-10-31)
+Proof of concept   ████████████████████  100%   (v0.3.1 · 2026-11-02)
 Deployed to server ████████████████████  100%   (goblinserver + Cloudflare tunnel)
 Model learning     █████████████░░░░░░░   67%   (2026-11-02: 4 trips, 67 fish, 25 h · live value: status bar in the app)
 ```
