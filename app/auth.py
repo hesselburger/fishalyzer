@@ -103,7 +103,7 @@ def session_user(conn, token):
     """The logged-in user for a cookie value, or None. Also tells whether the cookie is due for a refresh."""
     if not token:
         return None, False
-    r = conn.execute("""SELECT u.id, u.name, u.admin, s.last_seen FROM sessions s JOIN users u ON u.id=s.user_id
+    r = conn.execute("""SELECT u.id, u.name, u.admin, s.last_seen, s.logbook_id FROM sessions s JOIN users u ON u.id=s.user_id
                         WHERE s.token_hash=?""", (token_hash(token),)).fetchone()
     if not r:
         return None, False
@@ -113,7 +113,7 @@ def session_user(conn, token):
     stale = r["last_seen"] < (now - timedelta(days=1)).strftime(FMT)
     if stale:
         conn.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (now.strftime(FMT), token_hash(token)))
-    return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"])}, stale
+    return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"]), "logbook_id": r["logbook_id"]}, stale
 
 
 def end_session(conn, token):

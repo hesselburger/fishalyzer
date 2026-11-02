@@ -147,7 +147,8 @@ function statusDetails(s) {
   const pct = Math.round(s.model.confidence * 100);
   return `<h1>System status</h1>
   <div class="card"><h3>Server</h3><div class="muted">Version ${esc(s.version)} · up ${Math.floor(s.uptime_s / 3600)}h ${Math.floor((s.uptime_s % 3600) / 60)}m</div>
-    <div class="muted">${s.db.spots} spots · ${s.db.trips} trips · ${s.db.fish} fish · ${s.db.weather} cached weather hours</div></div>
+    <div class="muted">${esc(s.logbook)}: ${s.db.spots} spots · ${s.db.trips} trips · ${s.db.fish} fish</div>
+    <div class="muted">${s.db.weather} cached weather hours</div></div>
   <div class="card"><h3>Weather (Open-Meteo)</h3>
     <div class="muted">Last success: ${esc(s.weather.last_ok || "not yet")}</div>
     ${s.weather.last_error ? `<div class="muted">Last error (${esc(s.weather.last_error_at)}): ${esc(s.weather.last_error)}</div>` : ""}
@@ -170,7 +171,7 @@ async function viewToday() {
   const recent = await api("/trips?limit=3");
   const me = store.me;
   view.innerHTML = `
-    <div class="greet"><div class="muted">${longDate(today())}</div><h1>Hi ${esc(me)}</h1></div>
+    <div class="greet"><div class="muted">${longDate(today())} · ${esc(user.logbook.name)}</div><h1>Hi ${esc(me)}</h1></div>
     <div class="card hero"><div class="row"><select id="fcspot" class="grow" aria-label="Spot">${spotOptions(store.spot)}</select><a class="btn sm" href="#spot" title="Add a spot on the map">＋ Spot</a></div><div id="fc" style="margin-top:12px"><div class="empty">Reading the water…</div></div></div>
     <h2>Ship's log</h2>
     <div class="card"><div class="row spread"><div><h3>Been fishing?</h3>
@@ -499,7 +500,8 @@ function viewSpots() {
     <div class="item row spread"><div><b>${esc(s.name)}</b><div class="muted small">${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}</div>
       ${s.notes ? `<div class="muted small">${esc(s.notes)}</div>` : ""}</div>
       <a class="btn sm ghost" href="#spot?id=${s.id}">Edit</a></div>`).join("") || `<div class="empty">No spots yet.</div>`}</div>
-    <div class="muted small" style="margin-top:12px">Each spot gets its own weather (~1 km grid). Inlets in the same bay can share one spot.</div>`;
+    <div class="muted small" style="margin-top:12px">Spots are stored encrypted and only show up in ${esc(user.logbook.name)}.
+      Weather comes from a ~10 km grid, so the weather service never learns where you fish.</div>`;
 }
 
 let leaflet;
@@ -579,7 +581,7 @@ async function viewSpotMap(params) {
     const id = ++lookup, box = $("#watername"), nameInput = $("#spotform").name;
     box.textContent = "🌊 Looking up the water…";
     let w = {};
-    try { w = await api(`/water-name?lat=${ll.lat.toFixed(5)}&lon=${ll.lng.toFixed(5)}`); } catch { }
+    try { w = await api("/water-name", { method: "POST", body: { lat: +ll.lat.toFixed(5), lon: +ll.lng.toFixed(5) } }); } catch { }
     if (id !== lookup) return; // a newer tap won
     if (!w.name) { box.textContent = "🌊 Unnamed water"; return; }
     box.innerHTML = `🌊 <b>${esc(w.name)}</b> <span class="muted">${esc(w.kind || "")}${w.place ? " · " + esc(w.place) : ""}</span>`;
@@ -659,6 +661,141 @@ async function viewFeedback() {
   $$("[data-del]").forEach((b) => (b.onclick = async () => {
     if (!(await askConfirm("Delete this feedback?"))) return;
     await api(`/feedback/${b.dataset.del}`, { method: "DELETE" }); viewFeedback();
+  }));
+}
+
+// ---------- Logbooks & teams ----------
+// Everything you see belongs to the open logbook: your personal one, or a team you joined with its code.
+const lbKind = (lb) => lb.personal ? "Only you" : `Team · ${lb.members} member${lb.members > 1 ? "s" : ""} · ${lb.is_owner ? "you own it" : "owner " + esc(lb.owner)}`;
+
+function renderLbBtn() {
+  $("#lbbtn").innerHTML = `<small>${user.logbook.personal ? "📖" : "👥"}</small><b>${esc(user.logbook.name)}</b>`;
+}
+async function reloadLogbook() {
+  user = await api("/auth/me");
+  lastForecast = null; selDay = null; insSpecies = ""; insMin = "";
+  renderLbBtn();
+  try { await loadSpots(); } catch {}
+  refreshStatus();
+}
+async function switchLogbook(id) {
+  await api("/logbooks/active", { method: "PUT", body: { id } });
+  await reloadLogbook();
+  // Stay on the same page, except ones showing a trip or spot of the old logbook.
+  const page = location.hash.slice(1).split("?")[0] || "today";
+  const target = ["log", "spot"].includes(page) ? "#today" : "#" + page;
+  if (location.hash === target) route(); else location.hash = target;
+  toast(`Opened ${user.logbook.name}`);
+}
+$("#lbbtn").onclick = async () => {
+  const list = await api("/logbooks");
+  const body = openModal(`<h1>Open a logbook</h1>
+    ${list.map((lb) => `<button type="button" class="block lbpick ${lb.active ? "primary" : "ghost"}" data-lb="${lb.id}">
+      <b>${esc(lb.name)}</b><div class="small">${lbKind(lb)}</div></button>`).join("")}
+    <a class="btn block" href="#teams" style="display:block;margin-top:14px">Create or join a team →</a>`);
+  $$("[data-lb]", body).forEach((b) => (b.onclick = () => { closeModal(); switchLogbook(+b.dataset.lb).catch((e) => toast(e.message, true)); }));
+  $("a", body).addEventListener("click", closeModal);
+};
+
+async function viewTeams() {
+  const list = await api("/logbooks");
+  view.innerHTML = `<h1>Logbooks</h1>
+    <div class="muted" style="margin-bottom:10px">Your personal logbook is yours alone. A team logbook is shared with everyone who joins
+      with its code, and has its own spots, trips and model. Nothing moves between logbooks unless you choose to.</div>
+    ${list.map((lb) => `<div class="card"><div class="row spread"><div><h3 style="margin:0">${esc(lb.name)}</h3><div class="muted small">${lbKind(lb)}</div></div>
+      ${lb.active ? `<span class="chip on" style="cursor:default">open</span>` : `<button type="button" class="sm" data-open="${lb.id}">Open</button>`}</div>
+      ${lb.personal ? "" : `<button type="button" class="sm ghost" data-manage="${lb.id}" style="margin-top:10px">${lb.is_owner ? "Invite code · members" : "Members · leave"}</button>`}</div>`).join("")}
+    <h2>Start a team</h2>
+    <form class="card" id="newteam"><label style="margin-top:0">Team name</label><input name="name" required maxlength="40" placeholder="e.g. P4L">
+      <button class="primary block">Create team</button>
+      <div class="muted small" style="margin-top:6px">You get an invite code for your mates. Your personal spots and trips stay personal.</div></form>
+    <h2>Join a team</h2>
+    <form class="card" id="jointeam"><label style="margin-top:0">Invite code</label>
+      <input name="code" required autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="ABCD-2345">
+      <button class="primary block">Join team</button></form>`;
+  $$("[data-open]").forEach((b) => (b.onclick = () => switchLogbook(+b.dataset.open).catch((e) => toast(e.message, true))));
+  $$("[data-manage]").forEach((b) => (b.onclick = () => teamModal(list.find((lb) => lb.id === +b.dataset.manage))));
+  $("#newteam").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const { id } = await api("/logbooks", { method: "POST", body: { name: e.target.name.value } });
+      await reloadLogbook();
+      const lbs = await viewTeams();
+      teamModal(lbs.find((lb) => lb.id === id));
+    } catch (err) { toast(err.message, true); }
+  };
+  $("#jointeam").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/logbooks/join", { method: "POST", body: { code: e.target.code.value } });
+      await reloadLogbook(); toast(`Joined ${user.logbook.name}`); location.hash = "#today";
+    } catch (err) { toast(err.message, true); }
+  };
+  return list;
+}
+
+async function teamModal(lb) {
+  const members = await api(`/logbooks/${lb.id}/members`);
+  const body = openModal(`<h1>${esc(lb.name)}</h1>
+    ${lb.is_owner ? `<div class="card"><h3>Invite code</h3><div class="code">${esc(lb.invite_code)}</div>
+      <div class="muted small">Anyone with this code can join and see the team's spots and trips. Hand it over in person.</div>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><button type="button" class="sm ghost" id="copycode">Copy</button>
+        <button type="button" class="sm ghost" id="newcode">New code</button><button type="button" class="sm ghost" id="rename">Rename team</button></div></div>` : ""}
+    <div class="card"><h3>Members (${members.length})</h3>${members.map((m) => `<div class="item row spread">
+      <div><b>${esc(m.name)}</b>${m.is_owner ? ` <span class="muted small">owner</span>` : ""}
+        <div class="muted small">${m.trips} trip${m.trips === 1 ? "" : "s"} logged · joined ${esc(m.joined_at.slice(0, 10))}</div></div>
+      ${lb.is_owner && !m.is_owner ? `<span class="row" style="gap:4px"><button type="button" class="sm ghost" data-owner="${m.id}" data-name="${esc(m.name)}">Make owner</button>
+        <button type="button" class="x" data-kick="${m.id}" data-name="${esc(m.name)}" aria-label="Remove ${esc(m.name)}">✕</button></span>` : ""}</div>`).join("")}</div>
+    ${lb.is_owner ? `<button type="button" class="danger block" id="delteam">Delete team</button>` : `<button type="button" class="danger block" id="leave">Leave team</button>`}`);
+  const done = async (msg) => { toast(msg); await reloadLogbook(); viewTeams(); };
+  const act = (fn) => async () => { try { await fn(); } catch (err) { toast(err.message, true); } };
+  if (lb.is_owner) {
+    $("#copycode", body).onclick = () => navigator.clipboard.writeText(lb.invite_code).then(() => toast("Code copied"), () => toast("Copy it by hand", true));
+    $("#newcode", body).onclick = act(async () => {
+      if (!(await askConfirm("Make a new invite code? The old one stops working. Members stay in.", "New code"))) return;
+      const { invite_code } = await api(`/logbooks/${lb.id}/code`, { method: "POST" });
+      teamModal({ ...lb, invite_code });
+    });
+    $("#rename", body).onclick = act(async () => {
+      const name = await askText("Team name", lb.name);
+      if (name == null) return;
+      await api(`/logbooks/${lb.id}`, { method: "PUT", body: { name } });
+      done("Team renamed");
+    });
+    $$("[data-owner]", body).forEach((b) => (b.onclick = act(async () => {
+      if (!(await askConfirm(`Make ${b.dataset.name} the owner? You stay a member, but only the owner can invite, remove people or delete the team.`, "Hand over"))) return;
+      await api(`/logbooks/${lb.id}/owner`, { method: "PUT", body: { id: +b.dataset.owner } });
+      done(`${b.dataset.name} owns ${lb.name} now`);
+    })));
+    $$("[data-kick]", body).forEach((b) => (b.onclick = act(async () => {
+      if (!(await askConfirm(`Remove ${b.dataset.name}? They keep a copy of their own trips; the team keeps its copy too.`, "Remove"))) return;
+      await api(`/logbooks/${lb.id}/members/${b.dataset.kick}`, { method: "DELETE" });
+      toast(`${b.dataset.name} removed`); teamModal(lb);
+    })));
+    $("#delteam", body).onclick = act(async () => {
+      if (!(await askConfirm(`Delete ${lb.name}? Every member gets a copy of their own trips in their personal logbook. Everything else in the team is gone.`, "Delete team"))) return;
+      await api(`/logbooks/${lb.id}`, { method: "DELETE" });
+      done(`${lb.name} deleted`);
+    });
+  } else {
+    $("#leave", body).onclick = () => leaveModal(lb, done);
+  }
+}
+
+function leaveModal(lb, done) {
+  const body = openModal(`<h1>Leave ${esc(lb.name)}?</h1>
+    <p class="muted">What should happen to the trips you logged here, and the spots you added?</p>
+    <button type="button" class="ghost block lbpick" data-mode="keep"><b>Leave them with the team</b>
+      <div class="small muted">The team keeps everything. Nothing comes with you.</div></button>
+    <button type="button" class="ghost block lbpick" data-mode="copy"><b>Keep a copy</b>
+      <div class="small muted">Copied to your personal logbook. The team keeps its copy.</div></button>
+    <button type="button" class="ghost block lbpick" data-mode="take"><b>Take them with me</b>
+      <div class="small muted">Moved to your personal logbook and removed from the team. Spots that others' trips use stay with the team.</div></button>`);
+  $$("[data-mode]", body).forEach((b) => (b.onclick = async () => {
+    try {
+      await api(`/logbooks/${lb.id}/leave`, { method: "POST", body: { mode: b.dataset.mode } });
+      closeModal(); done(`You left ${lb.name}`);
+    } catch (err) { toast(err.message, true); }
   }));
 }
 
@@ -774,13 +911,13 @@ async function renderUsers() {
     catch (err) { toast(err.message, true); }
   }));
   $$("[data-deluser]").forEach((b) => (b.onclick = async () => {
-    if (!(await askConfirm(`Delete ${b.dataset.name}? Their logged trips stay.`))) return;
+    if (!(await askConfirm(`Delete ${b.dataset.name}? Their personal logbook goes with them. Their trips in teams stay, and teams they own pass to another member.`))) return;
     await api(`/users/${b.dataset.deluser}`, { method: "DELETE" }); renderUsers();
   }));
 }
 
 // ---------- router ----------
-const routes = { today: viewToday, calendar: viewCalendar, log: viewLog, insights: viewInsights, spots: viewSpots, spot: viewSpotMap, feedback: viewFeedback, account: viewAccount, admin: viewAdmin };
+const routes = { today: viewToday, calendar: viewCalendar, log: viewLog, insights: viewInsights, spots: viewSpots, spot: viewSpotMap, teams: viewTeams, feedback: viewFeedback, account: viewAccount, admin: viewAdmin };
 let currentHash = "#today";
 async function route() {
   if (!user) return; // the login screen stays until login succeeds
@@ -801,7 +938,9 @@ async function route() {
 window.addEventListener("hashchange", route);
 let started = false;
 async function start() {
+  try { user = await api("/auth/me"); } catch { return; } // the login response doesn't carry the logbook
   $("#nav [data-tab=admin]").hidden = !user.admin;
+  renderLbBtn();
   try { await loadSpots(); } catch {}
   try { glossary = await api("/glossary"); } catch {}
   route();

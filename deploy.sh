@@ -13,5 +13,8 @@ cd "$(dirname "$0")"
 PORT="${PORT:-8080}"
 DIR="${DIR:-fishalyzer}"
 tar czf - --exclude=data --exclude=__pycache__ --exclude=.git --exclude=deploy.env --exclude=.env . | ssh "$SERVER" "mkdir -p $DIR && tar xzf - -C $DIR"
-ssh "$SERVER" "cd $DIR && mkdir -p data && touch .env && { grep -v '^PORT=' .env || true; echo PORT=$PORT; } > .env.new && mv .env.new .env && chmod 600 .env && docker compose up -d --build && docker compose ps"
+# The encryption key is made once, on the server, and never leaves it (or changes): a new key would lock out every spot.
+ssh "$SERVER" "cd $DIR && mkdir -p data && touch .env && { grep -v '^PORT=' .env || true; echo PORT=$PORT; } > .env.new && mv .env.new .env \
+  && { grep -q '^FISHALYZER_KEY=' .env || { echo FISHALYZER_KEY=\$(openssl rand -base64 32 | tr '+/' '-_') >> .env && echo 'New FISHALYZER_KEY in ~/$DIR/.env - back it up somewhere safe.'; }; } \
+  && chmod 600 .env && docker compose up -d --build && docker compose ps"
 echo "Deployed. Open http://${SERVER#*@}:$PORT"

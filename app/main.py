@@ -11,9 +11,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, model, water, weather
+from . import auth, db, logbooks, model, water, weather
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 STARTED = time.time()
 
@@ -50,9 +50,12 @@ async def require_login(request, call_next):
     token = request.cookies.get(auth.COOKIE)
     with db.db() as conn:
         user, refresh = auth.session_user(conn, token)
+        # Every data endpoint works in this logbook only; membership is re-checked on each request.
+        lb = user and logbooks.active(conn, user["id"], user.pop("logbook_id"))
     if not user:
         return JSONResponse({"detail": "Not logged in"}, status_code=401)
     request.state.user = user
+    request.state.lb = lb
     resp = await call_next(request)
     if refresh:  # slide the cookie's expiry so active users never get logged out
         _set_cookie(resp, request, token)
@@ -105,20 +108,28 @@ class Trip(BaseModel):
 
 def _sync_trip_weather(trip_id):
     with db.db() as conn:
-        t = conn.execute('SELECT t.start, t."end", s.lat, s.lon FROM trips t JOIN spots s ON s.id=t.spot_id WHERE t.id=?',
-                         (trip_id,)).fetchone()
-        if not t:
+        t = conn.execute('SELECT start, "end", spot_id FROM trips WHERE id=?', (trip_id,)).fetchone()
+        s = t and t["spot_id"] and db.spot(conn, t["spot_id"])
+        if not s:
             return
         try:
-            weather.ensure_range(conn, t["lat"], t["lon"], datetime.fromisoformat(t["start"]), datetime.fromisoformat(t["end"]))
+            weather.ensure_range(conn, s["lat"], s["lon"], datetime.fromisoformat(t["start"]), datetime.fromisoformat(t["end"]))
         except Exception:
             pass  # recorded in weather.status; retried via /api/weather/sync
 
 
-def _model(species=None, min_length=None):
+def _lid(request):
+    return request.state.lb["id"]
+
+
+def _prior(lb):
+    return model.DEFAULT_PRIOR_HOURS if lb["prior_hours"] is None else lb["prior_hours"]
+
+
+def _model(lb, species=None, min_length=None):
+    prior = _prior(lb)
     with db.db() as conn:
-        prior = float(db.get_setting(conn, "prior_hours", model.DEFAULT_PRIOR_HOURS))
-        hours, skipped = model.dataset(conn, species or None, min_length or None)
+        hours, skipped = model.dataset(conn, lb["id"], species or None, min_length or None)
     m = model.fit(hours, prior)
     m["skipped_hours"] = skipped
     m["prior_hours"] = prior
@@ -201,7 +212,8 @@ def logout(request: Request):
 
 @app.get("/api/auth/me")
 def me(request: Request):
-    return request.state.user
+    lb = request.state.lb
+    return {**request.state.user, "logbook": {k: lb[k] for k in ("id", "name", "personal", "is_owner")}}
 
 
 @app.put("/api/auth/pin")
@@ -263,43 +275,189 @@ def delete_user(uid: int, request: Request):
     if uid == request.state.user["id"]:
         raise HTTPException(400, "You can't delete yourself.")
     with db.db() as conn:
+        logbooks.before_user_delete(conn, uid)
         conn.execute("DELETE FROM users WHERE id=?", (uid,))
     return {"ok": True}
 
 
-# ---------- spots ----------
-@app.get("/api/spots")
-def list_spots():
+# ---------- logbooks ----------
+class Name(BaseModel):
+    name: str
+
+
+class Code(BaseModel):
+    code: str
+
+
+class Pick(BaseModel):
+    id: int
+
+
+class Leave(BaseModel):
+    mode: str
+
+
+def _member(conn, request, lid, owner=False):
+    lb = logbooks.membership(conn, lid, request.state.user["id"])
+    if not lb:
+        raise HTTPException(404, "Unknown logbook")
+    if owner and not lb["is_owner"]:
+        raise HTTPException(403, "Only the team's owner can do that.")
+    return lb
+
+
+def _switch(conn, request, lid):
+    conn.execute("UPDATE sessions SET logbook_id=? WHERE token_hash=?", (lid, auth.token_hash(request.cookies.get(auth.COOKIE))))
+
+
+def _team_op(fn):
+    try:
+        return fn()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/logbooks")
+def list_logbooks(request: Request):
     with db.db() as conn:
-        return db.rows(conn.execute("SELECT * FROM spots ORDER BY name"))
+        out = logbooks.mine(conn, request.state.user["id"])
+    for lb in out:
+        lb["active"] = lb["id"] == _lid(request)
+    return out
+
+
+@app.post("/api/logbooks")
+def create_team(body: Name, request: Request):
+    with db.db() as conn:
+        lid = _team_op(lambda: logbooks.create_team(conn, request.state.user["id"], body.name))
+        _switch(conn, request, lid)
+    return {"id": lid}
+
+
+@app.post("/api/logbooks/join")
+def join_team(body: Code, request: Request):
+    with db.db() as conn:
+        lid = _team_op(lambda: logbooks.join(conn, request.state.user["id"], body.code))
+        _switch(conn, request, lid)
+    return {"id": lid}
+
+
+@app.put("/api/logbooks/active")
+def switch_logbook(body: Pick, request: Request):
+    with db.db() as conn:
+        _member(conn, request, body.id)
+        _switch(conn, request, body.id)
+    return {"ok": True}
+
+
+@app.get("/api/logbooks/{lid}/members")
+def team_members(lid: int, request: Request):
+    with db.db() as conn:
+        _member(conn, request, lid)
+        return logbooks.members(conn, lid)
+
+
+@app.put("/api/logbooks/{lid}")
+def rename_team(lid: int, body: Name, request: Request):
+    with db.db() as conn:
+        lb = _member(conn, request, lid, owner=True)
+        if lb["personal"]:
+            raise HTTPException(400, "Your personal logbook keeps its name.")
+        _team_op(lambda: logbooks.rename(conn, lb, body.name))
+    return {"ok": True}
+
+
+@app.post("/api/logbooks/{lid}/code")
+def new_invite_code(lid: int, request: Request):
+    """The old code stops working at once; people who already joined stay in."""
+    with db.db() as conn:
+        lb = _member(conn, request, lid, owner=True)
+        if lb["personal"]:
+            raise HTTPException(400, "A personal logbook can't be shared.")
+        return {"invite_code": logbooks.reset_code(conn, lb)}
+
+
+@app.put("/api/logbooks/{lid}/owner")
+def hand_over_team(lid: int, body: Pick, request: Request):
+    with db.db() as conn:
+        lb = _member(conn, request, lid, owner=True)
+        _team_op(lambda: logbooks.transfer(conn, lb, body.id))
+    return {"ok": True}
+
+
+@app.delete("/api/logbooks/{lid}/members/{uid}")
+def remove_member(lid: int, uid: int, request: Request):
+    with db.db() as conn:
+        lb = _member(conn, request, lid, owner=True)
+        _team_op(lambda: logbooks.remove_member(conn, lb, uid))
+    return {"ok": True}
+
+
+@app.post("/api/logbooks/{lid}/leave")
+def leave_team(lid: int, body: Leave, request: Request):
+    with db.db() as conn:
+        lb = _member(conn, request, lid)
+        _team_op(lambda: logbooks.leave(conn, lb, request.state.user["id"], body.mode))
+    return {"ok": True}
+
+
+@app.delete("/api/logbooks/{lid}")
+def delete_team(lid: int, request: Request):
+    with db.db() as conn:
+        lb = _member(conn, request, lid, owner=True)
+        _team_op(lambda: logbooks.delete_team(conn, lb))
+    return {"ok": True}
+
+
+# ---------- spots (only ever the active logbook's) ----------
+def _own_spot(conn, request, sid):
+    s = db.spot(conn, sid, _lid(request))
+    if not s:
+        raise HTTPException(404, "Unknown spot")
+    return s
+
+
+@app.get("/api/spots")
+def list_spots(request: Request):
+    with db.db() as conn:
+        return db.spots(conn, _lid(request))
 
 
 @app.post("/api/spots")
-def add_spot(s: Spot):
+def add_spot(s: Spot, request: Request):
     with db.db() as conn:
-        cur = conn.execute("INSERT INTO spots(name, lat, lon, notes) VALUES (?,?,?,?)", (s.name, s.lat, s.lon, s.notes))
+        cur = conn.execute("INSERT INTO spots(logbook_id, created_by, secret) VALUES (?,?,?)",
+                           (_lid(request), request.state.user["id"], db.spot_secret(s.name, s.lat, s.lon, s.notes)))
         return {"id": cur.lastrowid}
 
 
-@app.get("/api/water-name")
-def water_name(lat: float, lon: float):
-    """Name and type of the water at a point, e.g. {"name": "Tubæk", "kind": "river", "place": "Præstø"}."""
+class Point(BaseModel):
+    lat: float
+    lon: float
+
+
+@app.post("/api/water-name")
+def water_name(p: Point):
+    """Name and type of the water at a point, e.g. {"name": "Tubæk", "kind": "river", "place": "Præstø"}.
+    POST so the position never lands in a URL, and with it in the access log."""
     try:
-        return water.name_at(lat, lon) or {}
+        return water.name_at(p.lat, p.lon) or {}
     except Exception as e:
         raise HTTPException(502, f"Name lookup unavailable: {e}")
 
 
 @app.put("/api/spots/{sid}")
-def update_spot(sid: int, s: Spot):
+def update_spot(sid: int, s: Spot, request: Request):
     with db.db() as conn:
-        conn.execute("UPDATE spots SET name=?, lat=?, lon=?, notes=? WHERE id=?", (s.name, s.lat, s.lon, s.notes, sid))
+        _own_spot(conn, request, sid)
+        conn.execute("UPDATE spots SET secret=? WHERE id=?", (db.spot_secret(s.name, s.lat, s.lon, s.notes), sid))
     return {"ok": True}
 
 
 @app.delete("/api/spots/{sid}")
-def delete_spot(sid: int):
+def delete_spot(sid: int, request: Request):
     with db.db() as conn:
+        _own_spot(conn, request, sid)
         if conn.execute("SELECT COUNT(*) FROM trips WHERE spot_id=?", (sid,)).fetchone()[0]:
             raise HTTPException(400, "Spot has trips logged - edit it instead of deleting.")
         conn.execute("DELETE FROM spots WHERE id=?", (sid,))
@@ -307,9 +465,15 @@ def delete_spot(sid: int):
 
 
 # ---------- trips (with their counts and top fish) ----------
-TRIP_SELECT = 'SELECT t.*, s.name AS spot_name, ' \
-              '(SELECT COALESCE(SUM(count), 0) FROM trip_counts c WHERE c.trip_id=t.id) AS n_fish ' \
-              'FROM trips t LEFT JOIN spots s ON s.id=t.spot_id'
+TRIP_SELECT = 'SELECT t.*, (SELECT COALESCE(SUM(count), 0) FROM trip_counts c WHERE c.trip_id=t.id) AS n_fish ' \
+              'FROM trips t WHERE t.logbook_id=?'
+
+
+def _trips(conn, lid, where="", args=()):
+    """The logbook's trips, with spot names and notes decrypted. `where` continues TRIP_SELECT's WHERE."""
+    names = {s["id"]: s["name"] for s in db.spots(conn, lid)}
+    return [{**dict(t), "spot_name": names.get(t["spot_id"]), "notes": db.open_note(t["notes"])}
+            for t in conn.execute(TRIP_SELECT + where, (lid, *args))]
 
 
 def _full_trip(conn, t):
@@ -320,7 +484,8 @@ def _full_trip(conn, t):
     return t
 
 
-def _save_trip(conn, tid, t: Trip):
+def _save_trip(conn, request, tid, t: Trip):
+    lid = _lid(request)
     try:
         d = date.fromisoformat(t.date)
         start = datetime.fromisoformat(f"{t.date}T{t.start_time}")
@@ -331,13 +496,18 @@ def _save_trip(conn, tid, t: Trip):
         raise HTTPException(400, "Log trips after they happen - that date is in the future.")
     if end <= start:
         raise HTTPException(400, "End time must be after start time (trips are within one day).")
+    if not db.spot(conn, t.spot_id, lid):
+        raise HTTPException(400, "Pick one of this logbook's spots.")
     fmt = "%Y-%m-%dT%H:%M"
     if tid is None:
-        tid = conn.execute('INSERT INTO trips(spot_id, start, "end", anglers, notes) VALUES (?,?,?,?,?)',
-                           (t.spot_id, start.strftime(fmt), end.strftime(fmt), t.anglers, t.notes)).lastrowid
+        tid = conn.execute('INSERT INTO trips(logbook_id, created_by, spot_id, start, "end", anglers, notes) VALUES (?,?,?,?,?,?,?)',
+                           (lid, request.state.user["id"], t.spot_id, start.strftime(fmt), end.strftime(fmt), t.anglers,
+                            db.seal_note(t.notes))).lastrowid
     else:
+        if not conn.execute("SELECT 1 FROM trips WHERE id=? AND logbook_id=?", (tid, lid)).fetchone():
+            raise HTTPException(404, "Unknown trip")
         conn.execute('UPDATE trips SET spot_id=?, start=?, "end"=?, anglers=?, notes=? WHERE id=?',
-                     (t.spot_id, start.strftime(fmt), end.strftime(fmt), t.anglers, t.notes, tid))
+                     (t.spot_id, start.strftime(fmt), end.strftime(fmt), t.anglers, db.seal_note(t.notes), tid))
         conn.execute("DELETE FROM trip_counts WHERE trip_id=?", (tid,))
         conn.execute("DELETE FROM catches WHERE trip_id=?", (tid,))
 
@@ -360,83 +530,83 @@ def _save_trip(conn, tid, t: Trip):
 
 
 @app.get("/api/trips")
-def list_trips(start: Optional[str] = None, end: Optional[str] = None, limit: int = 200):
+def list_trips(request: Request, start: Optional[str] = None, end: Optional[str] = None, limit: int = 200):
     with db.db() as conn:
-        return db.rows(conn.execute(TRIP_SELECT + " WHERE t.start >= ? AND t.start < ? ORDER BY t.start DESC LIMIT ?",
-                                    (start or "0000", end or "9999", limit)))
+        return _trips(conn, _lid(request), " AND t.start >= ? AND t.start < ? ORDER BY t.start DESC LIMIT ?",
+                      (start or "0000", end or "9999", limit))
 
 
 @app.get("/api/trips/{tid}")
-def get_trip(tid: int):
+def get_trip(tid: int, request: Request):
     with db.db() as conn:
-        t = conn.execute(TRIP_SELECT + " WHERE t.id=?", (tid,)).fetchone()
+        t = _trips(conn, _lid(request), " AND t.id=?", (tid,))
         if not t:
             raise HTTPException(404, "Unknown trip")
-        return _full_trip(conn, t)
+        return _full_trip(conn, t[0])
 
 
 @app.post("/api/trips")
-def add_trip(t: Trip, bg: BackgroundTasks):
+def add_trip(t: Trip, bg: BackgroundTasks, request: Request):
     with db.db() as conn:
-        tid = _save_trip(conn, None, t)
+        tid = _save_trip(conn, request, None, t)
     bg.add_task(_sync_trip_weather, tid)
     return {"id": tid}
 
 
 @app.put("/api/trips/{tid}")
-def update_trip(tid: int, t: Trip, bg: BackgroundTasks):
+def update_trip(tid: int, t: Trip, bg: BackgroundTasks, request: Request):
     with db.db() as conn:
-        _save_trip(conn, tid, t)
+        _save_trip(conn, request, tid, t)
     bg.add_task(_sync_trip_weather, tid)
     return {"ok": True}
 
 
 @app.delete("/api/trips/{tid}")
-def delete_trip(tid: int):
+def delete_trip(tid: int, request: Request):
     with db.db() as conn:
-        conn.execute("DELETE FROM trips WHERE id=?", (tid,))
+        conn.execute("DELETE FROM trips WHERE id=? AND logbook_id=?", (tid, _lid(request)))
     return {"ok": True}
 
 
 @app.get("/api/species")
-def species():
+def species(request: Request):
     with db.db() as conn:
-        return [r[0] for r in conn.execute("SELECT species FROM trip_counts GROUP BY species ORDER BY SUM(count) DESC")]
+        return [r[0] for r in conn.execute("""SELECT species FROM trip_counts c JOIN trips t ON t.id=c.trip_id
+                                              WHERE t.logbook_id=? GROUP BY species ORDER BY SUM(count) DESC""", (_lid(request),))]
 
 
 @app.get("/api/anglers")
-def anglers():
+def anglers(request: Request):
     with db.db() as conn:
-        names = {n.strip() for (a,) in conn.execute("SELECT anglers FROM trips") for n in (a or "").split(",")}
+        names = {n.strip() for (a,) in conn.execute("SELECT anglers FROM trips WHERE logbook_id=?", (_lid(request),))
+                 for n in (a or "").split(",")}
     return sorted(n for n in names if n)
 
 
 # ---------- calendar / day ----------
 @app.get("/api/calendar")
-def calendar(month: str):
+def calendar(month: str, request: Request):
     """Per-day summary for 'YYYY-MM'."""
     first = date.fromisoformat(month + "-01")
     nxt = (first + timedelta(days=32)).replace(day=1)
     days = {}
     with db.db() as conn:
-        for r in conn.execute("""SELECT substr(t.start,1,10) d, COUNT(DISTINCT t.id) trips,
-                                        (SELECT COALESCE(SUM(c.count),0) FROM trip_counts c JOIN trips t2 ON t2.id=c.trip_id
-                                         WHERE substr(t2.start,1,10)=substr(t.start,1,10)) fish,
-                                        (SELECT MAX(length_cm) FROM catches k JOIN trips t3 ON t3.id=k.trip_id
-                                         WHERE substr(t3.start,1,10)=substr(t.start,1,10)) biggest
-                                 FROM trips t WHERE t.start>=? AND t.start<? GROUP BY d""",
-                              (first.isoformat(), nxt.isoformat())):
+        for r in conn.execute("""SELECT substr(t.start,1,10) d, COUNT(*) trips,
+                                        SUM((SELECT COALESCE(SUM(c.count),0) FROM trip_counts c WHERE c.trip_id=t.id)) fish,
+                                        MAX((SELECT MAX(length_cm) FROM catches k WHERE k.trip_id=t.id)) biggest
+                                 FROM trips t WHERE t.logbook_id=? AND t.start>=? AND t.start<? GROUP BY d""",
+                              (_lid(request), first.isoformat(), nxt.isoformat())):
             days[r["d"]] = {"trips": r["trips"], "catches": r["fish"], "biggest": r["biggest"]}
     return days
 
 
 @app.get("/api/day/{d}")
-def day(d: str):
+def day(d: str, request: Request):
     nxt = (date.fromisoformat(d) + timedelta(days=1)).isoformat()
     with db.db() as conn:
-        trips = [_full_trip(conn, t) for t in conn.execute(TRIP_SELECT + " WHERE t.start>=? AND t.start<? ORDER BY t.start", (d, nxt))]
+        trips = [_full_trip(conn, t) for t in _trips(conn, _lid(request), " AND t.start>=? AND t.start<? ORDER BY t.start", (d, nxt))]
         for t in trips:
-            s = conn.execute("SELECT lat, lon FROM spots WHERE id=?", (t["spot_id"],)).fetchone()
+            s = t["spot_id"] and db.spot(conn, t["spot_id"])
             if s:
                 start, end = datetime.fromisoformat(t["start"]), datetime.fromisoformat(t["end"])
                 wx = weather.load(conn, s["lat"], s["lon"], start, end)
@@ -448,12 +618,10 @@ def day(d: str):
 
 # ---------- model ----------
 @app.get("/api/forecast")
-def forecast(spot_id: int, species: str = "", min_length: float = 0):
+def forecast(spot_id: int, request: Request, species: str = "", min_length: float = 0):
     with db.db() as conn:
-        s = conn.execute("SELECT * FROM spots WHERE id=?", (spot_id,)).fetchone()
-    if not s:
-        raise HTTPException(404, "Unknown spot")
-    m = _model(species, min_length)
+        s = _own_spot(conn, request, spot_id)
+    m = _model(request.state.lb, species, min_length)
     try:
         hours = model.forecast(m, s["lat"], s["lon"])
     except Exception as e:
@@ -467,13 +635,13 @@ def forecast(spot_id: int, species: str = "", min_length: float = 0):
         if d["best_time"] is None:
             top = max((h for h in hours if h["time"].startswith(d["date"])), key=lambda h: h["score"])
             d.update(best=top["score"], best_time=top["time"][11:16])
-    return {"spot": dict(s), "confidence": m["confidence"], "r0": m["r0"], "hours": hours,
+    return {"spot": s, "confidence": m["confidence"], "r0": m["r0"], "hours": hours,
             "daily": list(daily.values()), "windows": model.best_windows(hours)}
 
 
 @app.get("/api/insights")
-def insights(species: str = "", min_length: float = 0):
-    m = _model(species, min_length)
+def insights(request: Request, species: str = "", min_length: float = 0):
+    m = _model(request.state.lb, species, min_length)
     feats = sorted(({"key": k, **v} for k, v in m["features"].items()), key=lambda f: -f["importance"])
     return {k: m[k] for k in ("r0", "effort", "catches", "hours", "skipped_hours", "prior_hours", "confidence")} | {"features": feats}
 
@@ -519,53 +687,56 @@ def glossary():
 
 
 @app.get("/api/settings")
-def get_settings():
-    with db.db() as conn:
-        return {"prior_hours": float(db.get_setting(conn, "prior_hours", model.DEFAULT_PRIOR_HOURS))}
+def get_settings(request: Request):
+    return {"prior_hours": _prior(request.state.lb)}
 
 
 @app.put("/api/settings")
-def put_settings(body: dict):
+def put_settings(body: dict, request: Request):
+    """Model settings belong to the active logbook; every member of a team may tune its model."""
     with db.db() as conn:
         if "prior_hours" in body:
-            db.set_setting(conn, "prior_hours", max(0.0, float(body["prior_hours"])))
-    return get_settings()
+            request.state.lb["prior_hours"] = max(0.0, float(body["prior_hours"]))
+            conn.execute("UPDATE logbooks SET prior_hours=? WHERE id=?", (request.state.lb["prior_hours"], _lid(request)))
+    return get_settings(request)
 
 
 @app.post("/api/weather/sync")
-def weather_sync():
-    """Backfill weather for every trip that is missing it."""
+def weather_sync(request: Request):
+    """Backfill weather for every trip in this logbook that is missing it."""
     with db.db() as conn:
-        ids = [r[0] for r in conn.execute("SELECT id FROM trips")]
+        ids = [r[0] for r in conn.execute("SELECT id FROM trips WHERE logbook_id=?", (_lid(request),))]
     for tid in ids:
         _sync_trip_weather(tid)
     return {"trips": len(ids), "status": weather.status}
 
 
 @app.get("/api/status")
-def status():
+def status(request: Request):
+    lid = _lid(request)
     with db.db() as conn:
-        counts = {k: conn.execute(f"SELECT COUNT(*) FROM {k}").fetchone()[0] for k in ("spots", "trips", "weather")}
-        counts["fish"] = conn.execute("SELECT COALESCE(SUM(count), 0) FROM trip_counts").fetchone()[0]
-        prior = float(db.get_setting(conn, "prior_hours", model.DEFAULT_PRIOR_HOURS))
-        hours, skipped = model.dataset(conn)
-    m = model.fit(hours, prior)
-    return {"version": VERSION, "uptime_s": int(time.time() - STARTED), "db": counts,
+        counts = {k: conn.execute(f"SELECT COUNT(*) FROM {k} WHERE logbook_id=?", (lid,)).fetchone()[0] for k in ("spots", "trips")}
+        counts["weather"] = conn.execute("SELECT COUNT(*) FROM weather").fetchone()[0]
+        counts["fish"] = conn.execute("SELECT COALESCE(SUM(count), 0) FROM trip_counts c JOIN trips t ON t.id=c.trip_id "
+                                      "WHERE t.logbook_id=?", (lid,)).fetchone()[0]
+        hours, skipped = model.dataset(conn, lid)
+    m = model.fit(hours, _prior(request.state.lb))
+    return {"version": VERSION, "uptime_s": int(time.time() - STARTED), "db": counts, "logbook": request.state.lb["name"],
             "weather": weather.status, "model": {"hours": round(m["effort"], 1), "catches": m["catches"],
                                                  "hours_missing_weather": skipped, "confidence": model.confidence(m)}}
 
 
 @app.get("/api/export.csv")
-def export_csv():
+def export_csv(request: Request):
     """One row per trip with fish counts, top fish and the conditions mid-trip - for your own spreadsheet digging."""
     buf = io.StringIO()
     keys = list(model.FEATURES)
     w = csv.writer(buf)
     w.writerow(["date", "start", "end", "spot", "anglers", "fish_total", "counts", "top_fish", "notes", *keys])
     with db.db() as conn:
-        for t in conn.execute(TRIP_SELECT + " ORDER BY t.start"):
+        for t in _trips(conn, _lid(request), " ORDER BY t.start"):
             full = _full_trip(conn, t)
-            s = conn.execute("SELECT lat, lon FROM spots WHERE id=?", (t["spot_id"],)).fetchone()
+            s = t["spot_id"] and db.spot(conn, t["spot_id"])
             f = {}
             if s:
                 start, end = datetime.fromisoformat(t["start"]), datetime.fromisoformat(t["end"])

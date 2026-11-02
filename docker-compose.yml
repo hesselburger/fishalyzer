@@ -7,6 +7,9 @@ services:
       - "${PORT:-8080}:8080"   # host port; deploy.sh writes PORT to .env on the server
     volumes:
       - ./data:/data  # SQLite database lives here - back this folder up
+    environment:
+      # Encrypts spots and trip notes. Lives in .env, never in data/. Lose it and the spots can't be read - back it up separately.
+      - FISHALYZER_KEY=${FISHALYZER_KEY:?FISHALYZER_KEY missing from .env - deploy.sh creates one}
 
   # Cloudflare Tunnel: publishes the app on your own domain without opening router ports.
   # Off unless the server's .env has COMPOSE_PROFILES=tunnel and TUNNEL_TOKEN=... (see README).

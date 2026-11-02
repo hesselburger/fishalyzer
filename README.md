@@ -47,7 +47,9 @@ Needs a domain whose DNS is on Cloudflare. No router ports are opened; Cloudflar
 4. Create the admin account (see *Accounts* below) **before** turning the tunnel on.
 
 ### Locally on Windows
+Put an encryption key in `.env` next to `docker-compose.yml` once (any Fernet key; never commit it):
 ```bash
+echo FISHALYZER_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") >> .env
 docker compose up -d --build
 ```
 → http://localhost:8080
@@ -59,6 +61,21 @@ Everyone logs in with a username and a 4-digit PIN and stays logged in on that d
 - **Admin page** (☰ → Admin, admins only): create accounts, set a new PIN (also unlocks), delete accounts.
 - 5 wrong PINs lock an account for 15 min, doubling up to 24 h; 10 failed logins per device per 15 min.
 - From the server shell: `docker exec fishalyzer python -m app.auth add|pin|list ...` (see `app/auth.py`).
+
+## Logbooks, teams and privacy
+- Every account has a **personal logbook**: its spots, trips and model are visible to nobody else.
+- **Teams** (☰ → Teams): create one to get an invite code like `ABCD-2345`; whoever enters it joins and shares
+  that team's spots, trips and model. The owner can make a new code (the old one stops working), rename,
+  remove members (they keep a copy of their own trips) or hand the team over.
+- **Leaving a team**, you choose: leave your trips with the team, keep a copy, or take them with you.
+  Deleting a team first copies every member's own trips into their personal logbook.
+- The header shows which logbook is open; tap it to switch. Nothing ever moves between logbooks on its own.
+- Spot names, positions and notes and trip notes are **encrypted** in the database with `FISHALYZER_KEY` from the
+  server's `.env` (`deploy.sh` creates it on first deploy). A copied database or backup reveals no spots; the server
+  operator still could. Weather is cached and fetched on a ~10 km grid, so neither the cache nor Open-Meteo
+  pinpoints a spot.
+- **Back up the key** (`grep FISHALYZER_KEY ~/fishalyzer/.env`) somewhere other than the database backups.
+  Without it the spots can't be read, and a new key does not bring them back.
 
 ## How to use it
 1. **Spots** (☰ menu) – add your inlets on the map; a tap snaps to the nearest water and fills in its name.
@@ -78,10 +95,12 @@ app/main.py      API + serves the frontend
 app/model.py     the learning/scoring algorithm
 app/weather.py   Open-Meteo fetching + caching
 app/astro.py     sunrise/sunset, moon phase, solunar periods
-app/db.py        SQLite schema
+app/db.py        SQLite schema, spot encryption
+app/logbooks.py  personal logbooks, teams, invite codes, leaving, v0.4 migration
 app/static/      phone web app (index.html, app.js, style.css)
 data/            fishalyzer.db (back this up)
 STATUS.md        project tracker
+tests/           python tests/test_logbooks.py - migration + logbook isolation self-check
 ```
 
 ## Backup

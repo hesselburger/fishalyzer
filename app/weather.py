@@ -18,7 +18,16 @@ _forecast_cache = {}
 
 
 def grid(lat, lon):
-    return round(lat, 2), round(lon, 2)
+    # 0.1° ≈ 7-11 km: the cache and Open-Meteo only ever see this cell, never a spot. The marine model is coarser anyway.
+    return round(lat, 1), round(lon, 1)
+
+
+def regrid(conn):
+    """Move cached hours onto the current grid (v0.4 coarsened it so the cache no longer pinpoints spots)."""
+    for lat, lon in conn.execute("SELECT DISTINCT lat, lon FROM weather").fetchall():
+        if grid(lat, lon) != (lat, lon):
+            conn.execute("UPDATE OR IGNORE weather SET lat=?, lon=? WHERE lat=? AND lon=?", (*grid(lat, lon), lat, lon))
+            conn.execute("DELETE FROM weather WHERE lat=? AND lon=?", (lat, lon))  # hours a neighbouring cell already had
 
 
 def _get(url, params):

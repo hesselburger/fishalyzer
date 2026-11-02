@@ -1,7 +1,7 @@
 # Fishalyzer – project status
 
 ```
-Proof of concept   ████████████████████  100%   (v0.3.1 · 2026-11-02)
+Proof of concept   ████████████████████  100%   (v0.4.0 · 2026-11-02)
 Deployed to server ████████████████████  100%   (goblinserver + Cloudflare tunnel)
 Model learning     █████████████░░░░░░░   67%   (2026-11-02: 4 trips, 67 fish, 25 h · live value: status bar in the app)
 ```
@@ -24,6 +24,9 @@ server online · trips · fish · anglers on the water · weather API ✓/⚠ ·
 - [x] Phone-first PWA (add to home screen), Docker + deploy script
 - [x] Running on the home server (Docker), reachable over Tailscale
 - [x] v0.3: username + 4-digit PIN login with lockout, Admin page for accounts, public via Cloudflare Tunnel
+- [x] v0.4: personal logbook per account + team logbooks joined with one invite code, each with its own spots, trips and model
+- [x] v0.4: leaving a team: keep / copy / take your trips; removing or deleting never loses a member's own trips
+- [x] v0.4: spots and trip notes encrypted at rest (key in the server's .env); weather cache on a ~10 km grid
 
 ## Next ideas (not started)
 - [ ] Enable `tailscale serve` for HTTPS (needed for GPS + home-screen install)
@@ -31,7 +34,8 @@ server online · trips · fish · anglers on the water · weather API ✓/⚠ ·
 - [ ] Per-spot model once there's enough data (wind direction matters per inlet)
 - [ ] Real water level from DMI (needs free API key) instead of the coarse marine model
 - [ ] Photos on catches
-- [ ] Per-person views ("only my trips" in Insights) now that the app knows who's logged in
+- [ ] Copy a single spot or trip from your personal logbook into a team
+- [ ] Keep the last good forecast when Open-Meteo is down
 
 ## Fishing log progress
 Aim: ~75 hours fished and ~60 fish before the model is "mostly yours". Log blank trips too!

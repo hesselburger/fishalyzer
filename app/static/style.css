@@ -69,6 +69,11 @@ b { font-weight: 650; }
 .lamp b { color: var(--text); }
 .lamp small { font-size: .72rem; }
 .lamp .dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 8px currentColor; animation: flicker 4s infinite; }
+#lbbtn { min-width: 0; max-width: 34vw; }
+#lbbtn b { overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 420px) { #top .brand .bt { display: none; } }
+.code { font: 700 1.6rem ui-monospace, Consolas, monospace; letter-spacing: .12em; color: var(--accent); margin: 6px 0; user-select: all; }
+button.lbpick { text-align: left; }
 @keyframes flicker { 0%, 100% { opacity: 1; } 45% { opacity: .75; } 50% { opacity: 1; } 52% { opacity: .6; } }
 #top .logbtn { background: linear-gradient(180deg, #f2b955, var(--accent)); color: var(--ink); text-decoration: none; font-weight: 700;
   padding: 8px 14px; border-radius: var(--radius); border: 1px solid #a77420; white-space: nowrap;
@@ -230,7 +235,7 @@ summary { cursor: pointer; }
 .title-screen .tag { font: italic 1rem var(--serif); color: var(--brass); margin-top: 6px; }
 
 /* logged out: only the login form */
-body.loggedout #nav, body.loggedout .logbtn, body.loggedout #statusbar { visibility: hidden; }
+body.loggedout #nav, body.loggedout .logbtn, body.loggedout #statusbar, body.loggedout #lbbtn { visibility: hidden; }
 body.loggedout #nav { display: none; }
 input.pin { letter-spacing: .5em; font-size: 1.3em; text-align: center; }
 

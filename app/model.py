@@ -22,7 +22,7 @@ make "bad" conditions visible.
 import math
 from datetime import datetime, timedelta
 
-from . import astro, weather
+from . import astro, db, weather
 
 # Multipliers are combined as exp(DAMP * sum(log m)). Conditions are correlated
 # (e.g. falling pressure & clouds & wind), so the full product would overcount.
@@ -166,15 +166,18 @@ def _parse(s):
     return datetime.fromisoformat(s)
 
 
-def dataset(conn, species=None, min_length=None):
-    """Return (hours, skipped_hours) where hours = [(features, hours_fished, catches)]."""
-    trips = conn.execute(
-        'SELECT t.id, t.start, t."end", t.anglers, s.lat, s.lon FROM trips t JOIN spots s ON s.id = t.spot_id').fetchall()
+def dataset(conn, logbook_id, species=None, min_length=None):
+    """Return (hours, skipped_hours) where hours = [(features, hours_fished, catches)] for one logbook."""
+    pos = {s["id"]: s for s in db.spots(conn, logbook_id)}
+    trips = [{**dict(t), "lat": pos[t["spot_id"]]["lat"], "lon": pos[t["spot_id"]]["lon"]} for t in conn.execute(
+        'SELECT id, start, "end", anglers, spot_id FROM trips WHERE logbook_id = ?', (logbook_id,)) if t["spot_id"] in pos]
     # Total counts per trip; with a length filter only the measured top fish can qualify.
     if min_length:
         q, args = "SELECT trip_id, COUNT(*) FROM catches WHERE length_cm >= ?", [min_length]
     else:
         q, args = "SELECT trip_id, SUM(count) FROM trip_counts WHERE 1=1", []
+    q += " AND trip_id IN (SELECT id FROM trips WHERE logbook_id = ?)"
+    args.append(logbook_id)
     if species:
         q += " AND lower(species) = lower(?)"
         args.append(species)
